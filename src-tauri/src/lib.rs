@@ -124,6 +124,7 @@ struct ExportRequest {
     output_path: String,
     edit_state: EditState,
     profile: ExportProfile,
+    camera_path: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -253,14 +254,60 @@ fn evenize(value: i32) -> i32 {
     }
 }
 
-fn background_color(edit_state: &EditState) -> &'static str {
-    let gradients = ["#6ee7ff", "#0f172a", "#111827", "#0b1020"];
-    let wallpapers = ["#0f172a", "#0b1020", "#1f2937", "#0a0f1f"];
+fn parse_hex_color(value: &str) -> (i32, i32, i32) {
+    let hex = value.trim_start_matches('#');
+    if hex.len() != 6 {
+        return (0, 0, 0);
+    }
+    let r = i32::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+    let g = i32::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+    let b = i32::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+    (r, g, b)
+}
+
+fn background_source(edit_state: &EditState, width: i32, height: i32, fps: u32) -> String {
+    let gradients = [
+        ("#6ee7ff", "#a855f7", "#f97316", 0.5),
+        ("#0f172a", "#1e40af", "#38bdf8", 0.55),
+        ("#111827", "#7c3aed", "#ec4899", 0.6),
+        ("#0b1020", "#0f766e", "#22d3ee", 0.6),
+    ];
+    let wallpapers = [
+        ("#0f172a", "#1f2937"),
+        ("#0b1020", "#1f1b3a"),
+        ("#1f2937", "#0f172a"),
+        ("#0a0f1f", "#0b1020"),
+    ];
     let index = edit_state.background_preset as usize;
+    let t = "((X/max(W-1,1))+(Y/max(H-1,1)))/2";
     if edit_state.background_type == "wallpaper" {
-        wallpapers[index % wallpapers.len()]
+        let (start, end) = wallpapers[index % wallpapers.len()];
+        let (sr, sg, sb) = parse_hex_color(start);
+        let (er, eg, eb) = parse_hex_color(end);
+        let r = format!("{sr}+({er}-{sr})*{t}");
+        let g = format!("{sg}+({eg}-{sg})*{t}");
+        let b = format!("{sb}+({eb}-{sb})*{t}");
+        format!(
+            "nullsrc=s={width}x{height}:r={fps},format=rgba,geq=r='{r}':g='{g}':b='{b}':a='255'"
+        )
     } else {
-        gradients[index % gradients.len()]
+        let (start, mid, end, mid_pos) = gradients[index % gradients.len()];
+        let (sr, sg, sb) = parse_hex_color(start);
+        let (mr, mg, mb) = parse_hex_color(mid);
+        let (er, eg, eb) = parse_hex_color(end);
+        let m = mid_pos;
+        let r = format!(
+            "if(lte({t},{m}),{sr}+({mr}-{sr})*{t}/{m},{mr}+({er}-{mr})*({t}-{m})/(1-{m}))"
+        );
+        let g = format!(
+            "if(lte({t},{m}),{sg}+({mg}-{sg})*{t}/{m},{mg}+({eg}-{mg})*({t}-{m})/(1-{m}))"
+        );
+        let b = format!(
+            "if(lte({t},{m}),{sb}+({mb}-{sb})*{t}/{m},{mb}+({eb}-{mb})*({t}-{m})/(1-{m}))"
+        );
+        format!(
+            "nullsrc=s={width}x{height}:r={fps},format=rgba,geq=r='{r}':g='{g}':b='{b}':a='255'"
+        )
     }
 }
 
@@ -273,7 +320,7 @@ fn rounded_alpha_expr(radius: i32) -> String {
     )
 }
 
-fn build_export_filter(edit_state: &EditState, profile: &ExportProfile) -> String {
+fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_camera: bool) -> String {
     let output_w = profile.width as i32;
     let output_h = profile.height as i32;
     let aspect = aspect_ratio(&edit_state.aspect);
@@ -297,10 +344,9 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile) -> Strin
     let shadow_blur = (shadow / 4).max(1);
     let shadow_alpha = ((shadow as f32) / 120.0).clamp(0.0, 0.6);
     let shadow_offset = (shadow / 6).max(0);
-    let color = background_color(edit_state);
+    let bg_source = background_source(edit_state, output_w, output_h, profile.fps);
     let base = format!(
-        "color=c={color}:s={output_w}x{output_h}:r={fps}[bg];[0:v]scale={inner_w}:{inner_h}:force_original_aspect_ratio=decrease,pad={inner_w}:{inner_h}:(ow-iw)/2:(oh-ih)/2,format=rgba",
-        fps = profile.fps
+        "{bg_source}[bg];[0:v]scale={inner_w}:{inner_h}:force_original_aspect_ratio=decrease,pad={inner_w}:{inner_h}:(ow-iw)/2:(oh-ih)/2,format=rgba"
     );
     let rounded = if radius > 0 {
         let alpha_expr = rounded_alpha_expr(radius);
@@ -308,14 +354,56 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile) -> Strin
     } else {
         base
     };
-    if shadow > 0 {
+    let base_label = if has_camera { "base" } else { "v" };
+    let base = if shadow > 0 {
         format!(
-            "{rounded},split=2[fg][shadow];[shadow]boxblur={shadow_blur}:1,colorchannelmixer=aa={shadow_alpha}[shadow];[bg][shadow]overlay=x={shadow_x}:y={shadow_y}[bg2];[bg2][fg]overlay=x={pos_x}:y={pos_y}[v]",
+            "{rounded},split=2[fg][shadow];[shadow]boxblur={shadow_blur}:1,colorchannelmixer=aa={shadow_alpha}[shadow];[bg][shadow]overlay=x={shadow_x}:y={shadow_y}:shortest=1[bg2];[bg2][fg]overlay=x={pos_x}:y={pos_y}:shortest=1[{base_label}]",
             shadow_x = pos_x + shadow_offset,
-            shadow_y = pos_y + shadow_offset
+            shadow_y = pos_y + shadow_offset,
+            base_label = base_label
         )
     } else {
-        format!("{rounded}[fg];[bg][fg]overlay=x={pos_x}:y={pos_y}[v]")
+        format!("{rounded}[fg];[bg][fg]overlay=x={pos_x}:y={pos_y}:shortest=1[{base_label}]", base_label = base_label)
+    };
+    if !has_camera {
+        return base;
+    }
+    let scale = (output_w as f32 / 420.0).max(0.1);
+    let mut camera_size = (edit_state.camera_size as f32 * scale).round() as i32;
+    camera_size = evenize(camera_size.max(2));
+    let offset = (12.0 * scale).round() as i32;
+    let camera_x = offset;
+    let camera_y = (output_h - camera_size - offset).max(0);
+    let camera_radius = match edit_state.camera_shape.as_str() {
+        "circle" => camera_size / 2,
+        "rounded" => (18.0 * scale).round() as i32,
+        _ => (6.0 * scale).round() as i32,
+    }
+    .min(camera_size / 2);
+    let camera_shadow = edit_state.camera_shadow as i32;
+    let camera_shadow_blur = (camera_shadow / 4).max(1);
+    let camera_shadow_alpha = ((camera_shadow as f32) / 120.0).clamp(0.0, 0.6);
+    let camera_shadow_offset = (camera_shadow / 6).max(0);
+    let mirror = if edit_state.camera_mirror { "hflip," } else { "" };
+    let camera_base = format!(
+        "[1:v]{mirror}scale={camera_size}:{camera_size}:force_original_aspect_ratio=increase,crop={camera_size}:{camera_size},format=rgba"
+    );
+    let camera_rounded = if camera_radius > 0 {
+        let alpha_expr = rounded_alpha_expr(camera_radius);
+        format!("{camera_base},geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{alpha_expr}'")
+    } else {
+        camera_base
+    };
+    if camera_shadow > 0 {
+        format!(
+            "{base};{camera_rounded},split=2[cam][camshadow];[camshadow]boxblur={camera_shadow_blur}:1,colorchannelmixer=aa={camera_shadow_alpha}[camshadow];[base][camshadow]overlay=x={shadow_x}:y={shadow_y}:shortest=1[bg2];[bg2][cam]overlay=x={camera_x}:y={camera_y}:shortest=1[v]",
+            shadow_x = camera_x + camera_shadow_offset,
+            shadow_y = camera_y + camera_shadow_offset
+        )
+    } else {
+        format!(
+            "{base};{camera_rounded}[cam];[base][cam]overlay=x={camera_x}:y={camera_y}:shortest=1[v]"
+        )
     }
 }
 
@@ -389,11 +477,23 @@ fn run_export_job(
     job: &ExportJob,
 ) -> Result<(), String> {
     let duration_ms = get_media_duration_ms(&job.request.input_path);
-    let filter = build_export_filter(&job.request.edit_state, &job.request.profile);
-    let mut args = vec![
-        "-y".to_string(),
-        "-i".to_string(),
-        job.request.input_path.clone(),
+    let camera_path = job
+        .request
+        .camera_path
+        .as_ref()
+        .filter(|path| !path.is_empty());
+    let has_camera = camera_path
+        .map(|path| PathBuf::from(path).exists())
+        .unwrap_or(false);
+    let filter = build_export_filter(&job.request.edit_state, &job.request.profile, has_camera);
+    let mut args = vec!["-y".to_string(), "-i".to_string(), job.request.input_path.clone()];
+    if let Some(path) = camera_path {
+        if has_camera {
+            args.push("-i".to_string());
+            args.push(path.to_string());
+        }
+    }
+    args.extend([
         "-filter_complex".to_string(),
         filter,
         "-map".to_string(),
@@ -402,7 +502,7 @@ fn run_export_job(
         "0:a?".to_string(),
         "-r".to_string(),
         job.request.profile.fps.to_string(),
-    ];
+    ]);
     let bitrate = format!("{}k", job.request.profile.bitrate_kbps.max(1));
     match job.request.profile.format.as_str() {
         "h265" | "hevc" => {
@@ -448,32 +548,55 @@ fn run_export_job(
         .stdout
         .take()
         .ok_or("export_stdout_unavailable".to_string())?;
-    let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let bytes = reader.read_line(&mut line).map_err(|e| e.to_string())?;
-        if bytes == 0 {
-            break;
-        }
-        let trimmed = line.trim();
-        if let Some(value) = trimmed.strip_prefix("out_time_ms=") {
-            if let Ok(out_time_ms) = value.parse::<u64>() {
-                if let Some(duration_ms) = duration_ms {
-                    let progress = (out_time_ms as f64 / duration_ms as f64).min(1.0);
-                    let status = ExportStatus {
-                        job_id: job.job_id.clone(),
-                        state: "running".to_string(),
-                        progress: progress as f32,
-                        error: None,
-                    };
-                    if let Ok(mut guard) = state.lock() {
-                        guard.statuses.insert(job.job_id.clone(), status.clone());
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("export_stderr_unavailable".to_string())?;
+    let job_id = job.job_id.clone();
+    let app_handle = app.clone();
+    let state_handle = Arc::clone(state);
+    let reader_handle = thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let bytes = match reader.read_line(&mut line) {
+                Ok(bytes) => bytes,
+                Err(_) => break,
+            };
+            if bytes == 0 {
+                break;
+            }
+            let trimmed = line.trim();
+            if let Some(value) = trimmed.strip_prefix("out_time_ms=") {
+                if let Ok(out_time_ms) = value.parse::<u64>() {
+                    if let Some(duration_ms) = duration_ms {
+                        let progress = (out_time_ms as f64 / duration_ms as f64).min(1.0);
+                        let status = ExportStatus {
+                            job_id: job_id.clone(),
+                            state: "running".to_string(),
+                            progress: progress as f32,
+                            error: None,
+                        };
+                        if let Ok(mut guard) = state_handle.lock() {
+                            guard.statuses.insert(job_id.clone(), status.clone());
+                        }
+                        emit_export_status(&app_handle, &status);
                     }
-                    emit_export_status(app, &status);
                 }
             }
+            if trimmed == "progress=end" {
+                break;
+            }
         }
+    });
+    let stderr_handle = thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut buffer = String::new();
+        let _ = reader.read_to_string(&mut buffer);
+        buffer
+    });
+    loop {
         let cancelled = {
             if let Ok(guard) = state.lock() {
                 guard.cancellations.get(&job.job_id).copied().unwrap_or(false)
@@ -484,14 +607,31 @@ fn run_export_job(
         if cancelled {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = reader_handle.join();
+            let _ = stderr_handle.join();
             return Err("export_cancelled".to_string());
         }
-    }
-    let status = child.wait().map_err(|e| e.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("export_failed".to_string())
+        if let Ok(Some(status)) = child.try_wait() {
+            let _ = reader_handle.join();
+            let stderr_output = stderr_handle.join().unwrap_or_default();
+            return if status.success() {
+                Ok(())
+            } else if stderr_output.trim().is_empty() {
+                Err("export_failed".to_string())
+            } else {
+                let tail = stderr_output
+                    .lines()
+                    .rev()
+                    .take(12)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Err(format!("export_failed:\n{tail}"))
+            };
+        }
+        thread::sleep(Duration::from_millis(120));
     }
 }
 
@@ -750,13 +890,13 @@ fn start_recording(
 
     if let Some(camera_input) = camera_index {
         let filter = format!(
-            "[{camera_input}:v]scale=iw*0.25:-1,crop='min(iw,ih)':'min(iw,ih)',hflip,split=2[cam_base][cam_preview];[cam_base]format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(pow(max(abs(X-W/2)-W/3,0),2)+pow(max(abs(Y-H/2)-W/3,0),2),W*W/36),255,0)'[cam];[cam_preview]fps=15,scale=160:160:force_original_aspect_ratio=increase,crop=160:160,format=yuv420p,split=2[preview][avatar];[0:v][cam]overlay=W-w-24:H-h-24:shortest=1[v]"
+            "[{camera_input}:v]crop='min(iw,ih)':'min(iw,ih)',hflip,split=2[cam_preview][cam_avatar];[cam_preview]fps=15,scale=160:160:force_original_aspect_ratio=increase,crop=160:160,format=yuv420p[preview];[cam_avatar]fps=30,scale=160:160:force_original_aspect_ratio=increase,crop=160:160,format=yuv420p[avatar]"
         );
         args.extend([
             "-filter_complex".into(),
             filter,
             "-map".into(),
-            "[v]".into(),
+            "0:v".into(),
         ]);
         if let Some(audio_input) = audio_index {
             args.push("-map".into());

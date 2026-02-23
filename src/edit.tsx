@@ -3,7 +3,7 @@ import ReactDOM from "react-dom/client";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
-import { FiCamera, FiImage, FiSliders } from "react-icons/fi";
+import { FiCamera, FiImage, FiPause, FiPlay, FiSliders } from "react-icons/fi";
 import "./App.css";
 
 type EditState = {
@@ -50,6 +50,13 @@ const EditPage = () => {
   const [avatarSrc, setAvatarSrc] = useState("");
   const hasLoadedRef = useRef(false);
   const activeJobIdRef = useRef<string | null>(null);
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+  const avatarVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [previewDuration, setPreviewDuration] = useState(0);
+  const [previewTime, setPreviewTime] = useState(0);
+  const [previewPlaying, setPreviewPlaying] = useState(false);
+  const wasPlayingRef = useRef(false);
+  const isScrubbingRef = useRef(false);
 
   useEffect(() => {
     setOutputPath(localStorage.getItem("recordingOutputPath") ?? "");
@@ -99,6 +106,60 @@ const EditPage = () => {
         hasLoadedRef.current = true;
       });
   }, [outputPath]);
+
+  useEffect(() => {
+    const video = previewVideoRef.current;
+    if (!video) {
+      return;
+    }
+    const handleLoaded = () => {
+      setPreviewDuration(Number.isFinite(video.duration) ? video.duration : 0);
+      video.currentTime = 0;
+      video.pause();
+      setPreviewPlaying(false);
+      setPreviewTime(0);
+    };
+    const handleDuration = () => {
+      setPreviewDuration(Number.isFinite(video.duration) ? video.duration : 0);
+    };
+    const handleTime = () => {
+      if (!isScrubbingRef.current) {
+        setPreviewTime(video.currentTime || 0);
+      }
+    };
+    const handlePlay = () => setPreviewPlaying(true);
+    const handlePause = () => setPreviewPlaying(false);
+    const handleEnded = () => {
+      video.pause();
+      video.currentTime = 0;
+      setPreviewPlaying(false);
+      setPreviewTime(0);
+      if (avatarVideoRef.current) {
+        avatarVideoRef.current.pause();
+        avatarVideoRef.current.currentTime = 0;
+      }
+    };
+    const handleSeeked = () => {
+      syncAvatarToPreview(video.currentTime || 0);
+    };
+    video.addEventListener("loadedmetadata", handleLoaded);
+    video.addEventListener("durationchange", handleDuration);
+    video.addEventListener("timeupdate", handleTime);
+    video.addEventListener("play", handlePlay);
+    video.addEventListener("pause", handlePause);
+    video.addEventListener("ended", handleEnded);
+    video.addEventListener("seeked", handleSeeked);
+    handleLoaded();
+    return () => {
+      video.removeEventListener("loadedmetadata", handleLoaded);
+      video.removeEventListener("durationchange", handleDuration);
+      video.removeEventListener("timeupdate", handleTime);
+      video.removeEventListener("play", handlePlay);
+      video.removeEventListener("pause", handlePause);
+      video.removeEventListener("ended", handleEnded);
+      video.removeEventListener("seeked", handleSeeked);
+    };
+  }, [previewSrc]);
 
   useEffect(() => {
     if (!cameraPath) {
@@ -210,26 +271,12 @@ const EditPage = () => {
 
   const previewFrameWidth = 420;
   const previewFrameHeight = 236;
+  const nineBySixteenWidth = useMemo(
+    () => Math.round((previewFrameHeight * 9) / 16),
+    [previewFrameHeight]
+  );
   const exportDisabled =
     !outputPath || exportStatus?.state === "running" || exportStatus?.state === "queued";
-  const stageSize = useMemo(() => {
-    const aspectMap = {
-      "16:9": 16 / 9,
-      "1:1": 1,
-      "9:16": 9 / 16,
-    };
-    const aspect = aspectMap[editAspect];
-    let width = previewFrameWidth;
-    let height = previewFrameWidth / aspect;
-    if (height > previewFrameHeight) {
-      height = previewFrameHeight;
-      width = previewFrameHeight * aspect;
-    }
-    return {
-      width: Math.round(width),
-      height: Math.round(height),
-    };
-  }, [editAspect]);
   const cameraRadius =
     cameraShape === "circle" ? "9999px" : cameraShape === "rounded" ? "18px" : "6px";
   const exportStatusLabel = useMemo(() => {
@@ -263,6 +310,8 @@ const EditPage = () => {
     }
     return "";
   }, [previewError, previewLoading]);
+  const previewSeekMax = Math.max(previewDuration, 0.001);
+  const previewControlsDisabled = !previewSrc || previewLoading || !!previewError;
 
   const buildExportPath = (input: string) => {
     const sep = input.includes("\\") ? "\\" : "/";
@@ -304,15 +353,16 @@ const EditPage = () => {
     try {
       const response = await invoke<{ job_id: string }>("start_export", {
         request: {
-          inputPath: outputPath,
-          outputPath: buildExportPath(outputPath),
-          editState,
+          input_path: outputPath,
+          output_path: buildExportPath(outputPath),
+          edit_state: editState,
+          camera_path: cameraPath || null,
           profile: {
             format: "h264",
             width: size.width,
             height: size.height,
             fps: 60,
-            bitrateKbps: 8000,
+            bitrate_kbps: 8000,
           },
         },
       });
@@ -332,6 +382,81 @@ const EditPage = () => {
       });
     }
   };
+  const togglePreviewPlayback = () => {
+    const video = previewVideoRef.current;
+    if (!video || previewControlsDisabled) {
+      return;
+    }
+    if (video.ended) {
+      video.currentTime = 0;
+    }
+    if (video.paused) {
+      video.play().catch(() => null);
+      syncAvatarToPreview();
+    } else {
+      video.pause();
+      syncAvatarToPreview();
+    }
+  };
+  const syncAvatarToPreview = (time?: number) => {
+    const avatarVideo = avatarVideoRef.current;
+    const previewVideo = previewVideoRef.current;
+    if (!avatarVideo || !previewVideo) {
+      return;
+    }
+    const target = typeof time === "number" ? time : previewVideo.currentTime || 0;
+    if (Number.isFinite(avatarVideo.duration) && target <= avatarVideo.duration) {
+      avatarVideo.currentTime = target;
+    } else {
+      avatarVideo.currentTime = target;
+    }
+    if (previewVideo.paused || previewVideo.ended) {
+      avatarVideo.pause();
+    } else {
+      avatarVideo.play().catch(() => null);
+    }
+  };
+  const handlePreviewSeek = (value: number) => {
+    const video = previewVideoRef.current;
+    if (!video || previewControlsDisabled) {
+      return;
+    }
+    video.currentTime = value;
+    setPreviewTime(value);
+    syncAvatarToPreview(value);
+  };
+  const startScrub = () => {
+    if (previewControlsDisabled) {
+      return;
+    }
+    isScrubbingRef.current = true;
+    wasPlayingRef.current = previewPlaying;
+    previewVideoRef.current?.pause();
+    avatarVideoRef.current?.pause();
+  };
+  const endScrub = () => {
+    if (!isScrubbingRef.current) {
+      return;
+    }
+    isScrubbingRef.current = false;
+    if (wasPlayingRef.current) {
+      previewVideoRef.current?.play().catch(() => null);
+      avatarVideoRef.current?.play().catch(() => null);
+    }
+  };
+  const previewSurface = previewSrc ? (
+    <video
+      ref={previewVideoRef}
+      className="h-full w-full object-cover"
+      src={previewSrc}
+      muted
+      playsInline
+    />
+  ) : (
+    <div className="flex h-full items-center justify-center text-[11px] text-slate-400">
+      {previewLabel || "暂无预览"}
+    </div>
+  );
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
@@ -359,38 +484,55 @@ const EditPage = () => {
             </div>
 
             <div
-              className="relative flex items-center justify-center overflow-hidden rounded-3xl border border-white/5"
+              className="relative flex items-center justify-center"
               style={{
                 width: previewFrameWidth,
                 height: previewFrameHeight,
-                background: previewBackground,
               }}
             >
-                <div
-                  className="relative flex h-full w-full items-center justify-center"
-                  style={{
-                    padding: editPadding,
-                    borderRadius: editRadius,
-                    boxShadow: `0 16px 40px rgba(0,0,0,${editShadow / 100})`,
-                  }}
-                >
-                  <div className="relative h-full w-full overflow-hidden rounded-2xl">
-                    {previewSrc ? (
-                      <video
-                        className="h-full w-full object-cover"
-                        src={previewSrc}
-                        autoPlay
-                        muted
-                        loop
-                        playsInline
-                      />
-                    ) : (
-                      <div className="flex h-full items-center justify-center text-[11px] text-slate-400">
-                        {previewLabel || "暂无预览"}
+              <div
+                className="relative flex items-center justify-center overflow-hidden rounded-3xl border border-white/5"
+                style={{
+                  width: previewFrameWidth,
+                  height: previewFrameHeight,
+                  background: previewBackground,
+                }}
+              >
+                {editAspect === "9:16" ? (
+                  <div
+                    className="relative flex items-center justify-center"
+                    style={{
+                      width: nineBySixteenWidth,
+                      height: previewFrameHeight,
+                    }}
+                  >
+                    <div
+                      className="relative flex h-full w-full items-center justify-center"
+                      style={{
+                        padding: editPadding,
+                        borderRadius: editRadius,
+                        boxShadow: `0 16px 40px rgba(0,0,0,${editShadow / 100})`,
+                      }}
+                    >
+                      <div className="relative h-full w-full overflow-hidden rounded-2xl">
+                        {previewSurface}
                       </div>
-                    )}
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div
+                    className="relative flex h-full w-full items-center justify-center"
+                    style={{
+                      padding: editPadding,
+                      borderRadius: editRadius,
+                      boxShadow: `0 16px 40px rgba(0,0,0,${editShadow / 100})`,
+                    }}
+                  >
+                    <div className="relative h-full w-full overflow-hidden rounded-2xl">
+                      {previewSurface}
+                    </div>
+                  </div>
+                )}
                 <div
                   className="absolute bottom-3 left-3 overflow-hidden"
                   style={{
@@ -407,11 +549,10 @@ const EditPage = () => {
                 >
                   {avatarSrc ? (
                     <video
+                      ref={avatarVideoRef}
                       className="h-full w-full object-cover"
                       src={avatarSrc}
-                      autoPlay
                       muted
-                      loop
                       playsInline
                     />
                   ) : (
@@ -420,19 +561,41 @@ const EditPage = () => {
                     </div>
                   )}
                 </div>
-                <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between rounded-full border border-white/10 bg-slate-950/70 px-2.5 py-1 text-[10px] text-slate-300">
-                  <span className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full bg-emerald-400" />
-                    00:00
-                  </span>
-                  <span>{editAspect}</span>
-                </div>
+                <button
+                  type="button"
+                  onClick={togglePreviewPlayback}
+                  disabled={previewControlsDisabled}
+                  className={`absolute bottom-8 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border px-2.5 py-1 text-[10px] ${
+                    previewControlsDisabled
+                      ? "border-white/10 bg-slate-900/50 text-slate-500"
+                      : "border-white/10 bg-slate-950/70 text-slate-200"
+                  }`}
+                >
+                  {previewPlaying ? <FiPause /> : <FiPlay />}
+                  <span>{previewPlaying ? "暂停" : "播放"}</span>
+                </button>
               
+              </div>
             </div>
 
             <div className="flex w-full items-center justify-between text-[10px] text-slate-500">
               <span className="truncate">{outputPath || "D:\\recordings"}</span>
               <span>{errorMessage ? errorMessage : "Ready"}</span>
+            </div>
+            <div className="flex w-full items-center px-3 py-1.5">
+              <input
+                type="range"
+                min={0}
+                max={previewSeekMax}
+                step={0.01}
+                value={Math.min(previewTime, previewSeekMax)}
+                onChange={(event) => handlePreviewSeek(Number(event.target.value))}
+                onPointerDown={startScrub}
+                onPointerUp={endScrub}
+                onPointerCancel={endScrub}
+                disabled={previewControlsDisabled}
+                className="h-1.5 w-full cursor-pointer accent-cyan-400"
+              />
             </div>
             <div className="flex w-full items-center justify-between text-[10px] text-slate-400">
               <button
