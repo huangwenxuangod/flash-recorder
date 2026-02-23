@@ -312,6 +312,7 @@ function MainApp() {
         output_path: string;
         log_path: string;
         preview_url?: string | null;
+        camera_path?: string | null;
       }>("start_recording", {
         request: {
           resolution: "1080p",
@@ -335,6 +336,11 @@ function MainApp() {
         localStorage.setItem("recordingPreviewUrl", response.preview_url);
       } else {
         localStorage.removeItem("recordingPreviewUrl");
+      }
+      if (response.camera_path) {
+        localStorage.setItem("recordingCameraPath", response.camera_path);
+      } else {
+        localStorage.removeItem("recordingCameraPath");
       }
       localStorage.removeItem("recordingFinished");
       setOutputPath(response.output_path);

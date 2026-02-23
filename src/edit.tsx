@@ -1,8 +1,31 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
 import { FiCamera, FiImage, FiSliders } from "react-icons/fi";
 import "./App.css";
+
+type EditState = {
+  aspect: string;
+  padding: number;
+  radius: number;
+  shadow: number;
+  camera_size: number;
+  camera_shape: string;
+  camera_shadow: number;
+  camera_mirror: boolean;
+  camera_blur: boolean;
+  background_type: string;
+  background_preset: number;
+};
+
+type ExportStatus = {
+  job_id: string;
+  state: string;
+  progress: number;
+  error?: string | null;
+};
 
 const EditPage = () => {
   const [outputPath, setOutputPath] = useState("");
@@ -19,9 +42,138 @@ const EditPage = () => {
   const [backgroundType, setBackgroundType] = useState<"gradient" | "wallpaper">("gradient");
   const [backgroundPreset, setBackgroundPreset] = useState(0);
   const [activeTab, setActiveTab] = useState<"camera" | "background" | "frame">("camera");
+  const [exportStatus, setExportStatus] = useState<ExportStatus | null>(null);
+  const [previewSrc, setPreviewSrc] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState("");
+  const [cameraPath, setCameraPath] = useState("");
+  const [avatarSrc, setAvatarSrc] = useState("");
+  const hasLoadedRef = useRef(false);
+  const activeJobIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     setOutputPath(localStorage.getItem("recordingOutputPath") ?? "");
+    setCameraPath(localStorage.getItem("recordingCameraPath") ?? "");
+  }, []);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === "recordingOutputPath") {
+        setOutputPath(event.newValue ?? "");
+      }
+      if (event.key === "recordingCameraPath") {
+        setCameraPath(event.newValue ?? "");
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
+
+  useEffect(() => {
+    if (!outputPath) {
+      return;
+    }
+    invoke<EditState>("load_edit_state", { outputPath })
+      .then((state) => {
+        const aspect =
+          state.aspect === "1:1" || state.aspect === "9:16" ? state.aspect : "16:9";
+        const cameraShapeValue =
+          state.camera_shape === "rounded" || state.camera_shape === "square"
+            ? state.camera_shape
+            : "circle";
+        const backgroundValue = state.background_type === "wallpaper" ? "wallpaper" : "gradient";
+        setEditAspect(aspect);
+        setEditPadding(state.padding);
+        setEditRadius(state.radius);
+        setEditShadow(state.shadow);
+        setCameraSize(state.camera_size);
+        setCameraShape(cameraShapeValue);
+        setCameraShadow(state.camera_shadow);
+        setCameraMirror(state.camera_mirror);
+        setCameraBlur(state.camera_blur);
+        setBackgroundType(backgroundValue);
+        setBackgroundPreset(state.background_preset);
+        hasLoadedRef.current = true;
+      })
+      .catch(() => {
+        hasLoadedRef.current = true;
+      });
+  }, [outputPath]);
+
+  useEffect(() => {
+    if (!cameraPath) {
+      setAvatarSrc("");
+      return;
+    }
+    setAvatarSrc(convertFileSrc(cameraPath));
+  }, [cameraPath]);
+
+  useEffect(() => {
+    if (!outputPath) {
+      return;
+    }
+    setPreviewLoading(true);
+    setPreviewError("");
+    invoke<string>("ensure_preview", { outputPath })
+      .then((path) => {
+        setPreviewSrc(convertFileSrc(path));
+      })
+      .catch((error) => {
+        setPreviewSrc("");
+        setPreviewError(String(error));
+      })
+      .finally(() => {
+        setPreviewLoading(false);
+      });
+  }, [outputPath]);
+
+  useEffect(() => {
+    if (!outputPath || !hasLoadedRef.current) {
+      return;
+    }
+    const editState: EditState = {
+      aspect: editAspect,
+      padding: editPadding,
+      radius: editRadius,
+      shadow: editShadow,
+      camera_size: cameraSize,
+      camera_shape: cameraShape,
+      camera_shadow: cameraShadow,
+      camera_mirror: cameraMirror,
+      camera_blur: cameraBlur,
+      background_type: backgroundType,
+      background_preset: backgroundPreset,
+    };
+    invoke("save_edit_state", { outputPath, editState }).catch(() => null);
+  }, [
+    outputPath,
+    editPadding,
+    editRadius,
+    editShadow,
+    editAspect,
+    cameraSize,
+    cameraShape,
+    cameraShadow,
+    cameraMirror,
+    cameraBlur,
+    backgroundType,
+    backgroundPreset,
+  ]);
+
+  useEffect(() => {
+    const unlistenPromise = listen<ExportStatus>("export_progress", (event) => {
+      const status = event.payload;
+      if (activeJobIdRef.current && status.job_id !== activeJobIdRef.current) {
+        return;
+      }
+      setExportStatus(status);
+      if (["completed", "failed", "cancelled"].includes(status.state)) {
+        activeJobIdRef.current = null;
+      }
+    });
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten()).catch(() => null);
+    };
   }, []);
 
   useEffect(() => {
@@ -58,6 +210,8 @@ const EditPage = () => {
 
   const previewFrameWidth = 420;
   const previewFrameHeight = 236;
+  const exportDisabled =
+    !outputPath || exportStatus?.state === "running" || exportStatus?.state === "queued";
   const stageSize = useMemo(() => {
     const aspectMap = {
       "16:9": 16 / 9,
@@ -79,6 +233,106 @@ const EditPage = () => {
   const cameraRadius =
     cameraShape === "circle" ? "9999px" : cameraShape === "rounded" ? "18px" : "6px";
   const cameraShadowValue = `0 12px 30px rgba(0,0,0,${cameraShadow / 100})`;
+  const exportStatusLabel = useMemo(() => {
+    if (!exportStatus) {
+      return "未导出";
+    }
+    if (exportStatus.state === "running") {
+      return `导出中 ${Math.round(exportStatus.progress * 100)}%`;
+    }
+    if (exportStatus.state === "queued") {
+      return "排队中";
+    }
+    if (exportStatus.state === "completed") {
+      return "已完成";
+    }
+    if (exportStatus.state === "cancelled") {
+      return "已取消";
+    }
+    if (exportStatus.error) {
+      return `失败: ${exportStatus.error}`;
+    }
+    return "失败";
+  }, [exportStatus]);
+
+  const previewLabel = useMemo(() => {
+    if (previewLoading) {
+      return "生成预览中";
+    }
+    if (previewError) {
+      return "预览生成失败";
+    }
+    return "";
+  }, [previewError, previewLoading]);
+
+  const buildExportPath = (input: string) => {
+    const sep = input.includes("\\") ? "\\" : "/";
+    const index = input.lastIndexOf(sep);
+    if (index === -1) {
+      return "export.mp4";
+    }
+    return `${input.slice(0, index)}${sep}export.mp4`;
+  };
+
+  const profileForAspect = () => {
+    if (editAspect === "1:1") {
+      return { width: 1080, height: 1080 };
+    }
+    if (editAspect === "9:16") {
+      return { width: 1080, height: 1920 };
+    }
+    return { width: 1920, height: 1080 };
+  };
+
+  const handleExport = async () => {
+    if (!outputPath || exportDisabled) {
+      return;
+    }
+    const size = profileForAspect();
+    const editState: EditState = {
+      aspect: editAspect,
+      padding: editPadding,
+      radius: editRadius,
+      shadow: editShadow,
+      camera_size: cameraSize,
+      camera_shape: cameraShape,
+      camera_shadow: cameraShadow,
+      camera_mirror: cameraMirror,
+      camera_blur: cameraBlur,
+      background_type: backgroundType,
+      background_preset: backgroundPreset,
+    };
+    try {
+      const response = await invoke<{ job_id: string }>("start_export", {
+        request: {
+          inputPath: outputPath,
+          outputPath: buildExportPath(outputPath),
+          editState,
+          profile: {
+            format: "h264",
+            width: size.width,
+            height: size.height,
+            fps: 60,
+            bitrateKbps: 8000,
+          },
+        },
+      });
+      activeJobIdRef.current = response.job_id;
+      setExportStatus({
+        job_id: response.job_id,
+        state: "queued",
+        progress: 0,
+        error: null,
+      });
+    } catch (error) {
+      setExportStatus({
+        job_id: "",
+        state: "failed",
+        progress: 0,
+        error: String(error),
+      });
+    }
+  };
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
@@ -126,8 +380,21 @@ const EditPage = () => {
                   }}
                 >
                   <div className="h-full w-full rounded-2xl border border-white/10 bg-slate-900/80">
-                    <div className="flex h-full items-center justify-center text-[11px] text-slate-400">
-                      预览区域
+                    <div className="relative h-full w-full overflow-hidden rounded-2xl">
+                      {previewSrc ? (
+                        <video
+                          className="h-full w-full object-cover"
+                          src={previewSrc}
+                          autoPlay
+                          muted
+                          loop
+                          playsInline
+                        />
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-[11px] text-slate-400">
+                          {previewLabel || "暂无预览"}
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div
@@ -145,9 +412,20 @@ const EditPage = () => {
                       border: "1px solid rgba(255,255,255,0.08)",
                     }}
                   >
-                    <div className="flex h-full items-center justify-center text-[11px] text-slate-300">
-                      Camera
-                    </div>
+                    {avatarSrc ? (
+                      <video
+                        className="h-full w-full object-cover"
+                        src={avatarSrc}
+                        autoPlay
+                        muted
+                        loop
+                        playsInline
+                      />
+                    ) : (
+                      <div className="flex h-full items-center justify-center bg-gradient-to-br from-cyan-400/40 via-sky-500/20 to-indigo-500/40 text-[11px] font-semibold text-slate-100">
+                        YOU
+                      </div>
+                    )}
                   </div>
                   <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between rounded-full border border-white/10 bg-slate-950/70 px-2.5 py-1 text-[10px] text-slate-300">
                     <span className="flex items-center gap-1.5">
@@ -163,6 +441,21 @@ const EditPage = () => {
             <div className="flex w-full items-center justify-between text-[10px] text-slate-500">
               <span className="truncate">{outputPath || "D:\\recordings"}</span>
               <span>{errorMessage ? errorMessage : "Ready"}</span>
+            </div>
+            <div className="flex w-full items-center justify-between text-[10px] text-slate-400">
+              <button
+                type="button"
+                onClick={handleExport}
+                disabled={exportDisabled}
+                className={`rounded-full border px-3 py-1 ${
+                  exportDisabled
+                    ? "border-white/10 bg-slate-900/40 text-slate-500"
+                    : "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
+                }`}
+              >
+                导出
+              </button>
+              <span className="truncate">{exportStatusLabel}</span>
             </div>
           </section>
 

@@ -49,6 +49,7 @@ struct StartRecordingResponse {
     output_path: String,
     log_path: String,
     preview_url: Option<String>,
+    camera_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -121,7 +122,6 @@ struct ExportProfile {
 struct ExportRequest {
     input_path: String,
     output_path: String,
-    #[allow(dead_code)]
     edit_state: EditState,
     profile: ExportProfile,
 }
@@ -237,6 +237,88 @@ fn get_media_duration_ms(input_path: &str) -> Option<u64> {
     parse_duration_ms(&stderr)
 }
 
+fn aspect_ratio(aspect: &str) -> f32 {
+    match aspect {
+        "1:1" => 1.0,
+        "9:16" => 9.0 / 16.0,
+        _ => 16.0 / 9.0,
+    }
+}
+
+fn evenize(value: i32) -> i32 {
+    if value % 2 == 0 {
+        value
+    } else {
+        value - 1
+    }
+}
+
+fn background_color(edit_state: &EditState) -> &'static str {
+    let gradients = ["#6ee7ff", "#0f172a", "#111827", "#0b1020"];
+    let wallpapers = ["#0f172a", "#0b1020", "#1f2937", "#0a0f1f"];
+    let index = edit_state.background_preset as usize;
+    if edit_state.background_type == "wallpaper" {
+        wallpapers[index % wallpapers.len()]
+    } else {
+        gradients[index % gradients.len()]
+    }
+}
+
+fn rounded_alpha_expr(radius: i32) -> String {
+    let r2 = radius * radius;
+    format!(
+        "if(lte(X,{r})*lte(Y,{r})*gt(pow(X-{r},2)+pow(Y-{r},2),{r2}),0,if(lte(W-X,{r})*lte(Y,{r})*gt(pow(W-X-{r},2)+pow(Y-{r},2),{r2}),0,if(lte(X,{r})*lte(H-Y,{r})*gt(pow(X-{r},2)+pow(H-Y-{r},2),{r2}),0,if(lte(W-X,{r})*lte(H-Y,{r})*gt(pow(W-X-{r},2)+pow(H-Y-{r},2),{r2}),0,255))))",
+        r = radius,
+        r2 = r2
+    )
+}
+
+fn build_export_filter(edit_state: &EditState, profile: &ExportProfile) -> String {
+    let output_w = profile.width as i32;
+    let output_h = profile.height as i32;
+    let aspect = aspect_ratio(&edit_state.aspect);
+    let mut frame_w = output_w as f32;
+    let mut frame_h = frame_w / aspect;
+    if frame_h > output_h as f32 {
+        frame_h = output_h as f32;
+        frame_w = frame_h * aspect;
+    }
+    let padding = edit_state.padding as i32;
+    let mut inner_w = (frame_w.round() as i32 - padding * 2).max(2);
+    let mut inner_h = (frame_h.round() as i32 - padding * 2).max(2);
+    inner_w = evenize(inner_w);
+    inner_h = evenize(inner_h);
+    let pos_x = evenize((output_w - inner_w) / 2);
+    let pos_y = evenize((output_h - inner_h) / 2);
+    let radius = edit_state
+        .radius
+        .min((inner_w.min(inner_h) / 2) as u32) as i32;
+    let shadow = edit_state.shadow as i32;
+    let shadow_blur = (shadow / 4).max(1);
+    let shadow_alpha = ((shadow as f32) / 120.0).clamp(0.0, 0.6);
+    let shadow_offset = (shadow / 6).max(0);
+    let color = background_color(edit_state);
+    let base = format!(
+        "color=c={color}:s={output_w}x{output_h}:r={fps}[bg];[0:v]scale={inner_w}:{inner_h}:force_original_aspect_ratio=decrease,pad={inner_w}:{inner_h}:(ow-iw)/2:(oh-ih)/2,format=rgba",
+        fps = profile.fps
+    );
+    let rounded = if radius > 0 {
+        let alpha_expr = rounded_alpha_expr(radius);
+        format!("{base},geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{alpha_expr}'")
+    } else {
+        base
+    };
+    if shadow > 0 {
+        format!(
+            "{rounded},split=2[fg][shadow];[shadow]boxblur={shadow_blur}:1,colorchannelmixer=aa={shadow_alpha}[shadow];[bg][shadow]overlay=x={shadow_x}:y={shadow_y}[bg2];[bg2][fg]overlay=x={pos_x}:y={pos_y}[v]",
+            shadow_x = pos_x + shadow_offset,
+            shadow_y = pos_y + shadow_offset
+        )
+    } else {
+        format!("{rounded}[fg];[bg][fg]overlay=x={pos_x}:y={pos_y}[v]")
+    }
+}
+
 fn emit_export_status(app: &tauri::AppHandle, status: &ExportStatus) {
     let _ = app.emit("export_progress", status);
 }
@@ -307,21 +389,20 @@ fn run_export_job(
     job: &ExportJob,
 ) -> Result<(), String> {
     let duration_ms = get_media_duration_ms(&job.request.input_path);
+    let filter = build_export_filter(&job.request.edit_state, &job.request.profile);
     let mut args = vec![
         "-y".to_string(),
         "-i".to_string(),
         job.request.input_path.clone(),
+        "-filter_complex".to_string(),
+        filter,
+        "-map".to_string(),
+        "[v]".to_string(),
+        "-map".to_string(),
+        "0:a?".to_string(),
         "-r".to_string(),
         job.request.profile.fps.to_string(),
     ];
-    let scale = format!(
-        "scale=w={}:h={}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2",
-        job.request.profile.width,
-        job.request.profile.height,
-        job.request.profile.width,
-        job.request.profile.height
-    );
-    args.extend(["-vf".to_string(), scale]);
     let bitrate = format!("{}k", job.request.profile.bitrate_kbps.max(1));
     match job.request.profile.format.as_str() {
         "h265" | "hevc" => {
@@ -525,6 +606,7 @@ fn start_recording(
         message
     };
     let output_path = output_dir.join("recording.mp4");
+    let camera_path = output_dir.join("camera.mp4");
     let log_path = output_dir.join("ffmpeg.log");
 
     let fps = if request.fps == 0 { 60 } else { request.fps };
@@ -668,7 +750,7 @@ fn start_recording(
 
     if let Some(camera_input) = camera_index {
         let filter = format!(
-            "[{camera_input}:v]scale=iw*0.25:-1,crop='min(iw,ih)':'min(iw,ih)',hflip,split=2[cam_base][cam_preview];[cam_base]format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(pow(max(abs(X-W/2)-W/3,0),2)+pow(max(abs(Y-H/2)-W/3,0),2),W*W/36),255,0)'[cam];[cam_preview]fps=15,scale=160:160:force_original_aspect_ratio=increase,crop=160:160,format=yuv420p[preview];[0:v][cam]overlay=W-w-24:H-h-24:shortest=1[v]"
+            "[{camera_input}:v]scale=iw*0.25:-1,crop='min(iw,ih)':'min(iw,ih)',hflip,split=2[cam_base][cam_preview];[cam_base]format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(pow(max(abs(X-W/2)-W/3,0),2)+pow(max(abs(Y-H/2)-W/3,0),2),W*W/36),255,0)'[cam];[cam_preview]fps=15,scale=160:160:force_original_aspect_ratio=increase,crop=160:160,format=yuv420p,split=2[preview][avatar];[0:v][cam]overlay=W-w-24:H-h-24:shortest=1[v]"
         );
         args.extend([
             "-filter_complex".into(),
@@ -708,6 +790,19 @@ fn start_recording(
     }
 
     args.push(output_path.to_string_lossy().to_string());
+    if camera_index.is_some() {
+        args.extend([
+            "-map".into(),
+            "[avatar]".into(),
+            "-c:v".into(),
+            "libx264".into(),
+            "-preset".into(),
+            "veryfast".into(),
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+            camera_path.to_string_lossy().to_string(),
+        ]);
+    }
     if preview_url.is_some() {
         args.extend([
             "-map".into(),
@@ -755,6 +850,7 @@ fn start_recording(
         output_path: output_path.to_string_lossy().to_string(),
         log_path: log_path.to_string_lossy().to_string(),
         preview_url,
+        camera_path: camera_index.map(|_| camera_path.to_string_lossy().to_string()),
     })
 }
 
