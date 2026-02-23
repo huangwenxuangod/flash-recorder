@@ -4,13 +4,24 @@ use std::{
     io::Write,
     path::PathBuf,
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, State};
+use tauri::{async_runtime, Manager, State};
+use tokio::net::UdpSocket;
+use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::APIBuilder;
+use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::rtp::packet::Packet;
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::track::track_local::TrackLocalWriter;
+use webrtc_util::Unmarshal;
 
 #[derive(Deserialize)]
 struct StartRecordingRequest {
@@ -26,6 +37,7 @@ struct StartRecordingResponse {
     session_id: String,
     output_path: String,
     log_path: String,
+    preview_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -52,6 +64,25 @@ struct RecordingSession {
     child: Child,
 }
 
+const PREVIEW_RTP_PORT: u16 = 19000;
+
+struct PreviewState {
+    inner: Mutex<Option<PreviewSession>>,
+}
+
+impl PreviewState {
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(None),
+        }
+    }
+}
+
+struct PreviewSession {
+    peer: Arc<RTCPeerConnection>,
+    udp_task: async_runtime::JoinHandle<()>,
+}
+
 fn write_error_log(output_dir: &PathBuf, message: &str) {
     if let Ok(mut file) = fs::OpenOptions::new()
         .create(true)
@@ -60,6 +91,66 @@ fn write_error_log(output_dir: &PathBuf, message: &str) {
     {
         let _ = writeln!(file, "{message}");
     }
+}
+
+async fn create_preview_session() -> Result<PreviewSession, String> {
+    let mut media_engine = MediaEngine::default();
+    media_engine
+        .register_default_codecs()
+        .map_err(|e| e.to_string())?;
+    let api = APIBuilder::new().with_media_engine(media_engine).build();
+    let peer = Arc::new(
+        api.new_peer_connection(RTCConfiguration::default())
+            .await
+            .map_err(|e| e.to_string())?,
+    );
+    let track = Arc::new(TrackLocalStaticRTP::new(
+        RTCRtpCodecCapability {
+            mime_type: "video/H264".to_string(),
+            clock_rate: 90000,
+            channels: 0,
+            sdp_fmtp_line: "packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e01f"
+                .to_string(),
+            rtcp_feedback: vec![],
+        },
+        "video".to_string(),
+        "preview".to_string(),
+    ));
+    let rtp_sender = peer.add_track(track.clone()).await.map_err(|e| e.to_string())?;
+    async_runtime::spawn(async move {
+        let mut buf = vec![0u8; 1500];
+        loop {
+            if rtp_sender.read(&mut buf).await.is_err() {
+                break;
+            }
+        }
+    });
+    let track_for_task = track.clone();
+    let udp_task = async_runtime::spawn(async move {
+        let socket = match UdpSocket::bind(("127.0.0.1", PREVIEW_RTP_PORT)).await {
+            Ok(socket) => socket,
+            Err(_) => return,
+        };
+        let mut buf = vec![0u8; 2048];
+        loop {
+            let (len, _) = match socket.recv_from(&mut buf).await {
+                Ok(result) => result,
+                Err(_) => break,
+            };
+            let mut raw = &buf[..len];
+            let packet = match Packet::unmarshal(&mut raw) {
+                Ok(packet) => packet,
+                Err(_) => continue,
+            };
+            let _ = track_for_task.write_rtp(&packet).await;
+        }
+    });
+    Ok(PreviewSession { peer, udp_task })
+}
+
+async fn stop_preview_session(session: PreviewSession) {
+    let _ = session.peer.close().await;
+    session.udp_task.abort();
 }
 
 #[tauri::command]
@@ -91,6 +182,7 @@ fn exclude_window_from_capture(app: tauri::AppHandle, label: String) -> Result<(
 fn start_recording(
     _app: tauri::AppHandle,
     state: State<RecordingState>,
+    preview_state: State<PreviewState>,
     request: StartRecordingRequest,
 ) -> Result<StartRecordingResponse, String> {
     let mut guard = state.inner.lock().map_err(|_| "state_lock_failed")?;
@@ -184,9 +276,33 @@ fn start_recording(
         args.push("-an".into());
     }
 
+    let preview_url = if camera_index.is_some() {
+        Some("webrtc://local".to_string())
+    } else {
+        None
+    };
+
+    if preview_url.is_some() {
+        {
+            let mut preview_guard = preview_state
+                .inner
+                .lock()
+                .map_err(|_| "preview_state_lock_failed")?;
+            if let Some(existing) = preview_guard.take() {
+                async_runtime::block_on(stop_preview_session(existing));
+            }
+        }
+        let session = async_runtime::block_on(create_preview_session()).map_err(log_error)?;
+        let mut preview_guard = preview_state
+            .inner
+            .lock()
+            .map_err(|_| "preview_state_lock_failed")?;
+        *preview_guard = Some(session);
+    }
+
     if let Some(camera_input) = camera_index {
         let filter = format!(
-            "[{camera_input}:v]scale=iw*0.25:-1,format=rgba,crop='min(iw,ih)':'min(iw,ih)',hflip,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(pow(max(abs(X-W/2)-W/3,0),2)+pow(max(abs(Y-H/2)-W/3,0),2),W*W/36),255,0)'[cam];[0:v][cam]overlay=W-w-24:H-h-24:shortest=1[v]"
+            "[{camera_input}:v]scale=iw*0.25:-1,crop='min(iw,ih)':'min(iw,ih)',hflip,split=2[cam_base][cam_preview];[cam_base]format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(pow(max(abs(X-W/2)-W/3,0),2)+pow(max(abs(Y-H/2)-W/3,0),2),W*W/36),255,0)'[cam];[cam_preview]fps=15,scale=160:160:force_original_aspect_ratio=increase,crop=160:160,format=yuv420p[preview];[0:v][cam]overlay=W-w-24:H-h-24:shortest=1[v]"
         );
         args.extend([
             "-filter_complex".into(),
@@ -226,6 +342,31 @@ fn start_recording(
     }
 
     args.push(output_path.to_string_lossy().to_string());
+    if preview_url.is_some() {
+        args.extend([
+            "-map".into(),
+            "[preview]".into(),
+            "-c:v".into(),
+            "libx264".into(),
+            "-preset".into(),
+            "ultrafast".into(),
+            "-tune".into(),
+            "zerolatency".into(),
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+            "-profile:v".into(),
+            "baseline".into(),
+            "-g".into(),
+            "30".into(),
+            "-keyint_min".into(),
+            "30".into(),
+            "-bf".into(),
+            "0".into(),
+            "-f".into(),
+            "rtp".into(),
+            format!("rtp://127.0.0.1:{PREVIEW_RTP_PORT}?pkt_size=1200"),
+        ]);
+    }
 
     let log_file = fs::File::create(&log_path).map_err(|e| log_error(e.to_string()))?;
 
@@ -247,11 +388,47 @@ fn start_recording(
         session_id,
         output_path: output_path.to_string_lossy().to_string(),
         log_path: log_path.to_string_lossy().to_string(),
+        preview_url,
     })
 }
 
 #[tauri::command]
-fn stop_recording(state: State<RecordingState>) -> Result<StopRecordingResponse, String> {
+async fn webrtc_create_answer(
+    preview_state: State<'_, PreviewState>,
+    offer_sdp: String,
+) -> Result<String, String> {
+    let peer = {
+        let guard = preview_state
+            .inner
+            .lock()
+            .map_err(|_| "preview_state_lock_failed")?;
+        guard
+            .as_ref()
+            .map(|session| session.peer.clone())
+            .ok_or("preview_not_ready")?
+    };
+    let offer = RTCSessionDescription::offer(offer_sdp).map_err(|e| e.to_string())?;
+    peer.set_remote_description(offer)
+        .await
+        .map_err(|e| e.to_string())?;
+    let answer = peer.create_answer(None).await.map_err(|e| e.to_string())?;
+    let mut gather = peer.gathering_complete_promise().await;
+    peer.set_local_description(answer)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = gather.recv().await;
+    let local = peer
+        .local_description()
+        .await
+        .ok_or("missing_local_description")?;
+    Ok(local.sdp)
+}
+
+#[tauri::command]
+fn stop_recording(
+    state: State<RecordingState>,
+    preview_state: State<PreviewState>,
+) -> Result<StopRecordingResponse, String> {
     let mut guard = state.inner.lock().map_err(|_| "state_lock_failed")?;
     let mut session = guard.take().ok_or("no_active_recording")?;
     let duration_ms = session.started_at.elapsed().as_millis() as u64;
@@ -271,6 +448,11 @@ fn stop_recording(state: State<RecordingState>) -> Result<StopRecordingResponse,
     if !exited {
         let _ = session.child.kill();
         let _ = session.child.wait();
+    }
+    if let Ok(mut preview_guard) = preview_state.inner.lock() {
+        if let Some(preview_session) = preview_guard.take() {
+            async_runtime::block_on(stop_preview_session(preview_session));
+        }
     }
     Ok(StopRecordingResponse {
         session_id,
@@ -409,9 +591,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(RecordingState::new())
+        .manage(PreviewState::new())
         .invoke_handler(tauri::generate_handler![
             start_recording,
             stop_recording,
+            webrtc_create_answer,
             list_audio_devices,
             list_video_devices,
             exclude_window_from_capture

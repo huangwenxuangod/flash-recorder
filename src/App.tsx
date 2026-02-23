@@ -159,7 +159,11 @@ function App() {
   const startRecording = async () => {
     setErrorMessage("");
     try {
-      const response = await invoke<{ output_path: string; log_path: string }>("start_recording", {
+      const response = await invoke<{
+        output_path: string;
+        log_path: string;
+        preview_url?: string | null;
+      }>("start_recording", {
         request: {
           resolution: "1080p",
           fps: 60,
@@ -175,6 +179,11 @@ function App() {
       localStorage.setItem("selectedMic", mic);
       localStorage.setItem("recordingOutputPath", response.output_path);
       localStorage.setItem("recordingLogPath", response.log_path);
+      if (response.preview_url) {
+        localStorage.setItem("recordingPreviewUrl", response.preview_url);
+      } else {
+        localStorage.removeItem("recordingPreviewUrl");
+      }
       localStorage.removeItem("recordingFinished");
       setOutputPath(response.output_path);
       setLogPath(response.log_path);

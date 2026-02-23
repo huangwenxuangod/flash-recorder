@@ -15,11 +15,11 @@ function Mini() {
     return startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
   });
   const [errorMessage, setErrorMessage] = useState("");
-  const [selectedCamera, setSelectedCamera] = useState(
-    () => localStorage.getItem("selectedCamera") ?? "auto"
+  const [previewUrl, setPreviewUrl] = useState(
+    () => localStorage.getItem("recordingPreviewUrl") ?? ""
   );
-  const [avatarStream, setAvatarStream] = useState<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const peerRef = useRef<RTCPeerConnection | null>(null);
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
@@ -63,59 +63,17 @@ function Mini() {
         const active = event.newValue === "1";
         setIsRecording(active);
       }
-      if (event.key === "selectedCamera" && event.newValue) {
-        setSelectedCamera(event.newValue);
-      }
       if (event.key === "recordingStart" && event.newValue) {
         const startedAt = Number(event.newValue);
         setSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+      }
+      if (event.key === "recordingPreviewUrl") {
+        setPreviewUrl(event.newValue ?? "");
       }
     };
     window.addEventListener("storage", handleStorage);
     return () => window.removeEventListener("storage", handleStorage);
   }, []);
-
-  useEffect(() => {
-    if (!videoRef.current) {
-      return;
-    }
-    videoRef.current.srcObject = avatarStream;
-  }, [avatarStream]);
-
-  useEffect(() => {
-    const stopStream = () => {
-      if (avatarStream) {
-        avatarStream.getTracks().forEach((track) => track.stop());
-        setAvatarStream(null);
-      }
-    };
-    const openPreview = async () => {
-      if (!isRecording || selectedCamera === "no-camera") {
-        stopStream();
-        return;
-      }
-      try {
-        const baseStream = await navigator.mediaDevices.getUserMedia({ video: true });
-        baseStream.getTracks().forEach((track) => track.stop());
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const videoDevices = devices.filter((device) => device.kind === "videoinput");
-        let constraints: MediaStreamConstraints = { video: true };
-        if (selectedCamera !== "auto") {
-          const matched = videoDevices.find((device) => device.label === selectedCamera);
-          if (matched?.deviceId) {
-            constraints = { video: { deviceId: { exact: matched.deviceId } } };
-          }
-        }
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        setAvatarStream(stream);
-      } catch (error) {
-        stopStream();
-        setErrorMessage(String(error));
-      }
-    };
-    openPreview();
-    return () => stopStream();
-  }, [isRecording, selectedCamera]);
 
   const timerText = useMemo(() => {
     const minutes = Math.floor(seconds / 60)
@@ -125,6 +83,82 @@ function Mini() {
     return `${minutes}:${secs}`;
   }, [seconds]);
 
+  const isWebRtcPreview = useMemo(
+    () => previewUrl.startsWith("webrtc"),
+    [previewUrl]
+  );
+  const previewSrc = useMemo(() => {
+    if (!previewUrl || !isRecording || isWebRtcPreview) {
+      return "";
+    }
+    return previewUrl;
+  }, [isRecording, isWebRtcPreview, previewUrl]);
+
+  useEffect(() => {
+    if (!isRecording || !previewUrl || !isWebRtcPreview) {
+      if (peerRef.current) {
+        peerRef.current.close();
+        peerRef.current = null;
+      }
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+      return;
+    }
+    let active = true;
+    const pc = new RTCPeerConnection();
+    peerRef.current = pc;
+    pc.addTransceiver("video", { direction: "recvonly" });
+    pc.ontrack = (event) => {
+      if (!active || !videoRef.current) {
+        return;
+      }
+      if (event.streams && event.streams[0]) {
+        videoRef.current.srcObject = event.streams[0];
+        return;
+      }
+      const stream = new MediaStream([event.track]);
+      videoRef.current.srcObject = stream;
+    };
+    const waitForIce = () =>
+      new Promise<void>((resolve) => {
+        if (pc.iceGatheringState === "complete") {
+          resolve();
+          return;
+        }
+        const handleState = () => {
+          if (pc.iceGatheringState === "complete") {
+            pc.removeEventListener("icegatheringstatechange", handleState);
+            resolve();
+          }
+        };
+        pc.addEventListener("icegatheringstatechange", handleState);
+      });
+    const start = async () => {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitForIce();
+      const answerSdp = await invoke<string>("webrtc_create_answer", {
+        offerSdp: pc.localDescription?.sdp ?? "",
+      });
+      if (!active) {
+        return;
+      }
+      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+    };
+    start().catch((error) => setErrorMessage(String(error)));
+    return () => {
+      active = false;
+      if (peerRef.current) {
+        peerRef.current.close();
+        peerRef.current = null;
+      }
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+    };
+  }, [isRecording, isWebRtcPreview, previewUrl]);
+
   const stopRecording = async () => {
     try {
       await invoke("stop_recording");
@@ -132,6 +166,7 @@ function Mini() {
       localStorage.removeItem("recordingStart");
       localStorage.removeItem("selectedCamera");
       localStorage.removeItem("selectedMic");
+      localStorage.removeItem("recordingPreviewUrl");
       localStorage.setItem("recordingFinished", "1");
       setIsRecording(false);
       const mainWindow = await WebviewWindow.getByLabel("main");
@@ -153,10 +188,11 @@ function Mini() {
       <div className="flex h-full w-full items-center p-1.5">
         <div className="flex w-full items-center gap-2 rounded-lg border border-white/10 bg-gradient-to-r from-slate-950/90 via-slate-900/90 to-slate-950/90 px-2.5 py-1.5 shadow-2xl">
           <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-md border border-white/10 bg-slate-800/80">
-            {avatarStream ? (
+            {previewUrl && isRecording ? (
               <video
                 ref={videoRef}
                 className="h-full w-full object-cover"
+                src={isWebRtcPreview ? undefined : previewSrc}
                 autoPlay
                 muted
                 playsInline
