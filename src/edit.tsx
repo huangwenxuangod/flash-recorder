@@ -1,9 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
-import { FiCamera, FiImage, FiPause, FiPlay, FiSliders } from "react-icons/fi";
+import {
+  FiCamera,
+  FiChevronDown,
+  FiImage,
+  FiMinus,
+  FiPause,
+  FiPlay,
+  FiPlus,
+  FiSliders,
+} from "react-icons/fi";
+import { Toaster, toast } from "react-hot-toast";
 import "./App.css";
 
 type EditState = {
@@ -27,9 +37,99 @@ type ExportStatus = {
   error?: string | null;
 };
 
+const aspectOptions: SelectOption[] = [
+  { value: "16:9", label: "16:9" },
+  { value: "1:1", label: "1:1" },
+  { value: "9:16", label: "9:16" },
+];
+
+type SelectOption = {
+  value: string;
+  label: string;
+};
+
+type SelectMenuProps = {
+  value: string;
+  options: SelectOption[];
+  onChange: (value: string) => void;
+  icon: ReactNode;
+};
+
+function SelectMenu({ value, options, onChange, icon }: SelectMenuProps) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const current = options.find((option) => option.value === value) ?? options[0];
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (!rootRef.current) {
+        return;
+      }
+      if (rootRef.current.contains(event.target as Node)) {
+        return;
+      }
+      setOpen(false);
+    };
+    window.addEventListener("mousedown", handleClickOutside);
+    return () => window.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  return (
+    <div className="relative" ref={rootRef}>
+      <button
+        className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-800/80 bg-slate-950/90 px-3 py-2.5 text-left transition hover:border-slate-700/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400/30"
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className="flex items-center gap-3">
+          {icon}
+          <span className="text-sm font-medium text-slate-100">
+            {current ? current.label : ""}
+          </span>
+        </span>
+        <FiChevronDown
+          className={`h-4 w-4 text-slate-500 transition ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open ? (
+        <div
+          className="absolute left-0 right-0 z-50 mt-2 rounded-2xl border border-slate-800/80 bg-slate-950/95 p-1 shadow-2xl backdrop-blur"
+          role="listbox"
+        >
+          <div className="max-h-56 overflow-auto">
+            {options.map((option) => {
+              const selected = option.value === value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="option"
+                  aria-selected={selected}
+                  onClick={() => {
+                    onChange(option.value);
+                    setOpen(false);
+                  }}
+                  className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${
+                    selected
+                      ? "bg-slate-800/80 text-white"
+                      : "text-slate-200 hover:bg-slate-800/60"
+                  }`}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 const EditPage = () => {
   const [outputPath, setOutputPath] = useState("");
-  const [errorMessage] = useState("");
   const [editPadding, setEditPadding] = useState(0);
   const [editRadius, setEditRadius] = useState(12);
   const [editShadow, setEditShadow] = useState(20);
@@ -59,6 +159,8 @@ const EditPage = () => {
   const isScrubbingRef = useRef(false);
   const previewAreaRef = useRef<HTMLDivElement | null>(null);
   const [previewBaseHeight, setPreviewBaseHeight] = useState(236);
+  const [previewZoom, setPreviewZoom] = useState(1);
+  const lastExportStateRef = useRef<string | null>(null);
 
   useEffect(() => {
     setOutputPath(localStorage.getItem("recordingOutputPath") ?? "");
@@ -230,6 +332,10 @@ const EditPage = () => {
         return;
       }
       setExportStatus(status);
+      if (status.state === "completed" && lastExportStateRef.current !== "completed") {
+        toast.success("导出完成");
+      }
+      lastExportStateRef.current = status.state;
       if (["completed", "failed", "cancelled"].includes(status.state)) {
         activeJobIdRef.current = null;
       }
@@ -489,23 +595,7 @@ const EditPage = () => {
       <div className="mx-auto flex min-h-screen w-full max-w-4xl flex-col px-3 py-3">
         <div className="flex flex-1 gap-2.5">
           <section className="flex min-w-0 flex-1 flex-col items-center gap-2.5 rounded-3xl border border-white/5 bg-slate-900/40 p-2.5 shadow-2xl">
-            <div className="flex w-full items-center justify-between text-[11px] text-slate-400">
-              <div className="flex items-center gap-1.5">
-                {(["16:9", "1:1", "9:16"] as const).map((ratio) => (
-                  <button
-                    key={ratio}
-                    type="button"
-                    onClick={() => setEditAspect(ratio)}
-                    className={`rounded-full border px-2 py-0.5 ${
-                      editAspect === ratio
-                        ? "border-cyan-400/60 text-cyan-200"
-                        : "border-white/10 text-slate-400"
-                    }`}
-                  >
-                    {ratio}
-                  </button>
-                ))}
-              </div>
+            <div className="flex w-full items-center justify-end text-[11px] text-slate-400">
               <div className="text-slate-500">Preview</div>
             </div>
 
@@ -562,26 +652,75 @@ const EditPage = () => {
                     </div>
                   )}
                 </div>
-                <button
-                  type="button"
-                  onClick={togglePreviewPlayback}
-                  disabled={previewControlsDisabled}
-                  className={`absolute bottom-8 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border px-2.5 py-1 text-[10px] ${
-                    previewControlsDisabled
-                      ? "border-white/10 bg-slate-900/50 text-slate-500"
-                      : "border-white/10 bg-slate-950/70 text-slate-200"
-                  }`}
-                >
-                  {previewPlaying ? <FiPause /> : <FiPlay />}
-                  <span>{previewPlaying ? "暂停" : "播放"}</span>
-                </button>
+                <div className="absolute bottom-1 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-slate-950/80 px-3 py-1.5 text-[10px] text-slate-200">
+                  <div className="w-20">
+                    <SelectMenu
+                      value={editAspect}
+                      options={aspectOptions}
+                      onChange={(value) => setEditAspect(value as "16:9" | "1:1" | "9:16")}
+                      icon={<FiSliders className="text-slate-500" />}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={togglePreviewPlayback}
+                    disabled={previewControlsDisabled}
+                    className={`flex items-center gap-2 rounded-full border px-2.5 py-1 transition ${
+                      previewControlsDisabled
+                        ? "border-white/10 bg-slate-900/50 text-slate-500"
+                        : "border-white/10 bg-slate-950/70 text-slate-200 hover:border-cyan-400/50"
+                    }`}
+                  >
+                    {previewPlaying ? <FiPause /> : <FiPlay />}
+                    <span>{previewPlaying ? "暂停" : "播放"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExport}
+                    disabled={exportDisabled}
+                    className={`flex items-center gap-2 rounded-full border px-2.5 py-1 transition ${
+                      exportDisabled
+                        ? "border-white/10 bg-slate-900/50 text-slate-500"
+                        : "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
+                    }`}
+                  >
+                    导出
+                  </button>
+                  <span className="text-[9px] text-slate-400">{exportStatusLabel}</span>
+                </div>
               
               </div>
             </div>
 
-            <div className="flex w-full items-center justify-between text-[10px] text-slate-500">
-              <span className="truncate">{outputPath || "D:\\recordings"}</span>
-              <span>{errorMessage ? errorMessage : "Ready"}</span>
+            <div className="flex w-full items-center gap-2 rounded-xl border border-white/5 bg-slate-900/50 px-2 py-1.5">
+              <button
+                type="button"
+                onClick={() => setPreviewZoom((value) => Math.max(1, Number((value - 0.1).toFixed(2))))}
+                className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-slate-950/70 text-slate-200 transition hover:border-cyan-400/40"
+                aria-label="缩小"
+              >
+                <FiMinus className="h-3.5 w-3.5" />
+              </button>
+              <input
+                type="range"
+                min={1}
+                max={3}
+                step={0.05}
+                value={previewZoom}
+                onChange={(event) => setPreviewZoom(Number(event.target.value))}
+                className="h-1.5 flex-1 cursor-pointer accent-cyan-400"
+              />
+              <button
+                type="button"
+                onClick={() => setPreviewZoom((value) => Math.min(3, Number((value + 0.1).toFixed(2))))}
+                className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-slate-950/70 text-slate-200 transition hover:border-cyan-400/40"
+                aria-label="放大"
+              >
+                <FiPlus className="h-3.5 w-3.5" />
+              </button>
+              <div className="w-10 text-right text-[10px] text-slate-400">
+                {(previewZoom * 100).toFixed(0)}%
+              </div>
             </div>
             <div className="flex w-full items-center px-3 py-1.5">
               <input
@@ -598,21 +737,7 @@ const EditPage = () => {
                 className="h-1.5 w-full cursor-pointer accent-cyan-400"
               />
             </div>
-            <div className="flex w-full items-center justify-between text-[10px] text-slate-400">
-              <button
-                type="button"
-                onClick={handleExport}
-                disabled={exportDisabled}
-                className={`rounded-full border px-3 py-1 ${
-                  exportDisabled
-                    ? "border-white/10 bg-slate-900/40 text-slate-500"
-                    : "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
-                }`}
-              >
-                导出
-              </button>
-              <span className="truncate">{exportStatusLabel}</span>
-            </div>
+            <Toaster position="top-center" toastOptions={{ duration: 1600 }} />
           </section>
 
           <aside className="flex w-48 gap-2">
