@@ -232,7 +232,6 @@ const EditPage = () => {
   }, [editAspect]);
   const cameraRadius =
     cameraShape === "circle" ? "9999px" : cameraShape === "rounded" ? "18px" : "6px";
-  const cameraShadowValue = `0 12px 30px rgba(0,0,0,${cameraShadow / 100})`;
   const exportStatusLabel = useMemo(() => {
     if (!exportStatus) {
       return "未导出";
@@ -348,8 +347,8 @@ const EditPage = () => {
                     onClick={() => setEditAspect(ratio)}
                     className={`rounded-full border px-2 py-0.5 ${
                       editAspect === ratio
-                        ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
-                        : "border-white/10 bg-slate-950/50 text-slate-400"
+                        ? "border-cyan-400/60 text-cyan-200"
+                        : "border-white/10 text-slate-400"
                     }`}
                   >
                     {ratio}
@@ -360,82 +359,75 @@ const EditPage = () => {
             </div>
 
             <div
-              className="relative flex items-center justify-center rounded-3xl border border-white/5 bg-slate-950/40"
-              style={{ width: previewFrameWidth, height: previewFrameHeight }}
+              className="relative flex items-center justify-center overflow-hidden rounded-3xl border border-white/5"
+              style={{
+                width: previewFrameWidth,
+                height: previewFrameHeight,
+                background: previewBackground,
+              }}
             >
-              <div
-                className="relative flex items-center justify-center rounded-3xl"
-                style={{
-                  width: stageSize.width,
-                  height: stageSize.height,
-                  background: previewBackground,
-                }}
-              >
                 <div
-                  className="relative flex h-full w-full items-center justify-center bg-slate-950/80"
+                  className="relative flex h-full w-full items-center justify-center"
                   style={{
                     padding: editPadding,
                     borderRadius: editRadius,
                     boxShadow: `0 16px 40px rgba(0,0,0,${editShadow / 100})`,
                   }}
                 >
-                  <div className="h-full w-full rounded-2xl border border-white/10 bg-slate-900/80">
-                    <div className="relative h-full w-full overflow-hidden rounded-2xl">
-                      {previewSrc ? (
-                        <video
-                          className="h-full w-full object-cover"
-                          src={previewSrc}
-                          autoPlay
-                          muted
-                          loop
-                          playsInline
-                        />
-                      ) : (
-                        <div className="flex h-full items-center justify-center text-[11px] text-slate-400">
-                          {previewLabel || "暂无预览"}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <div
-                    className="absolute bottom-3 left-3 overflow-hidden"
-                    style={{
-                      width: cameraSize,
-                      height: cameraSize,
-                      borderRadius: cameraRadius,
-                      boxShadow: cameraShadowValue,
-                      transform: cameraMirror ? "scaleX(-1)" : "none",
-                      background: cameraBlur
-                        ? "rgba(15, 23, 42, 0.5)"
-                        : "rgba(15, 23, 42, 0.8)",
-                      backdropFilter: cameraBlur ? "blur(16px)" : "none",
-                      border: "1px solid rgba(255,255,255,0.08)",
-                    }}
-                  >
-                    {avatarSrc ? (
+                  <div className="relative h-full w-full overflow-hidden rounded-2xl">
+                    {previewSrc ? (
                       <video
                         className="h-full w-full object-cover"
-                        src={avatarSrc}
+                        src={previewSrc}
                         autoPlay
                         muted
                         loop
                         playsInline
                       />
                     ) : (
-                      <div className="flex h-full items-center justify-center bg-gradient-to-br from-cyan-400/40 via-sky-500/20 to-indigo-500/40 text-[11px] font-semibold text-slate-100">
-                        YOU
+                      <div className="flex h-full items-center justify-center text-[11px] text-slate-400">
+                        {previewLabel || "暂无预览"}
                       </div>
                     )}
                   </div>
-                  <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between rounded-full border border-white/10 bg-slate-950/70 px-2.5 py-1 text-[10px] text-slate-300">
-                    <span className="flex items-center gap-1.5">
-                      <span className="h-2 w-2 rounded-full bg-emerald-400" />
-                      00:00
-                    </span>
-                    <span>{editAspect}</span>
-                  </div>
                 </div>
-              </div>
+                <div
+                  className="absolute bottom-3 left-3 overflow-hidden"
+                  style={{
+                    width: cameraSize,
+                    height: cameraSize,
+                    borderRadius: cameraRadius,
+                    boxShadow: `0 16px 40px rgba(0,0,0,${cameraShadow / 120}), 0 0 0 1px rgba(255,255,255,0.1), inset 0 1px 0 rgba(255,255,255,0.25)`,
+                    transform: cameraMirror ? "scaleX(-1)" : "none",
+                    background: cameraBlur
+                      ? "rgba(15, 23, 42, 0.25)"
+                      : "rgba(15, 23, 42, 0.18)",
+                    backdropFilter: cameraBlur ? "blur(18px) saturate(140%)" : "blur(10px)",
+                  }}
+                >
+                  {avatarSrc ? (
+                    <video
+                      className="h-full w-full object-cover"
+                      src={avatarSrc}
+                      autoPlay
+                      muted
+                      loop
+                      playsInline
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center bg-gradient-to-br from-cyan-400/40 via-sky-500/20 to-indigo-500/40 text-[11px] font-semibold text-slate-100">
+                      YOU
+                    </div>
+                  )}
+                </div>
+                <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between rounded-full border border-white/10 bg-slate-950/70 px-2.5 py-1 text-[10px] text-slate-300">
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                    00:00
+                  </span>
+                  <span>{editAspect}</span>
+                </div>
+              
             </div>
 
             <div className="flex w-full items-center justify-between text-[10px] text-slate-500">
