@@ -30,7 +30,7 @@ type ExportStatus = {
 const EditPage = () => {
   const [outputPath, setOutputPath] = useState("");
   const [errorMessage] = useState("");
-  const [editPadding, setEditPadding] = useState(18);
+  const [editPadding, setEditPadding] = useState(0);
   const [editRadius, setEditRadius] = useState(12);
   const [editShadow, setEditShadow] = useState(20);
   const [editAspect, setEditAspect] = useState<"16:9" | "1:1" | "9:16">("16:9");
@@ -57,6 +57,8 @@ const EditPage = () => {
   const [previewPlaying, setPreviewPlaying] = useState(false);
   const wasPlayingRef = useRef(false);
   const isScrubbingRef = useRef(false);
+  const previewAreaRef = useRef<HTMLDivElement | null>(null);
+  const [previewBaseHeight, setPreviewBaseHeight] = useState(236);
 
   useEffect(() => {
     setOutputPath(localStorage.getItem("recordingOutputPath") ?? "");
@@ -247,6 +249,25 @@ const EditPage = () => {
     applyEditLayout();
   }, []);
 
+  useEffect(() => {
+    const node = previewAreaRef.current;
+    if (!node) {
+      return;
+    }
+    const updateSize = () => {
+      const rect = node.getBoundingClientRect();
+      if (!rect.width) {
+        return;
+      }
+      const height = rect.width / (16 / 9);
+      setPreviewBaseHeight(Math.round(height));
+    };
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
   const backgroundPresets = useMemo(
     () => ({
       gradients: [
@@ -269,12 +290,17 @@ const EditPage = () => {
       ? backgroundPresets.gradients[backgroundPreset % backgroundPresets.gradients.length]
       : backgroundPresets.wallpapers[backgroundPreset % backgroundPresets.wallpapers.length];
 
-  const previewFrameWidth = 420;
-  const previewFrameHeight = 236;
-  const nineBySixteenWidth = useMemo(
-    () => Math.round((previewFrameHeight * 9) / 16),
-    [previewFrameHeight]
-  );
+  const previewAspect = useMemo(() => {
+    if (editAspect === "1:1") {
+      return 1;
+    }
+    if (editAspect === "9:16") {
+      return 9 / 16;
+    }
+    return 16 / 9;
+  }, [editAspect]);
+  const previewFrameHeight = previewBaseHeight;
+  const previewFrameWidth = Math.round(previewFrameHeight * previewAspect);
   const exportDisabled =
     !outputPath || exportStatus?.state === "running" || exportStatus?.state === "queued";
   const cameraRadius =
@@ -447,7 +473,7 @@ const EditPage = () => {
   const previewSurface = previewSrc ? (
     <video
       ref={previewVideoRef}
-      className="h-full w-full object-cover"
+      className="h-full w-full object-contain"
       src={previewSrc}
       muted
       playsInline
@@ -484,11 +510,9 @@ const EditPage = () => {
             </div>
 
             <div
-              className="relative flex items-center justify-center"
-              style={{
-                width: previewFrameWidth,
-                height: previewFrameHeight,
-              }}
+              className="relative flex w-full items-center justify-center"
+              ref={previewAreaRef}
+              style={{ height: previewBaseHeight }}
             >
               <div
                 className="relative flex items-center justify-center overflow-hidden rounded-3xl border border-white/5"
@@ -498,41 +522,18 @@ const EditPage = () => {
                   background: previewBackground,
                 }}
               >
-                {editAspect === "9:16" ? (
-                  <div
-                    className="relative flex items-center justify-center"
-                    style={{
-                      width: nineBySixteenWidth,
-                      height: previewFrameHeight,
-                    }}
-                  >
-                    <div
-                      className="relative flex h-full w-full items-center justify-center"
-                      style={{
-                        padding: editPadding,
-                        borderRadius: editRadius,
-                        boxShadow: `0 16px 40px rgba(0,0,0,${editShadow / 100})`,
-                      }}
-                    >
-                      <div className="relative h-full w-full overflow-hidden rounded-2xl">
-                        {previewSurface}
-                      </div>
-                    </div>
+                <div
+                  className="relative flex h-full w-full items-center justify-center"
+                  style={{
+                    padding: editPadding,
+                    borderRadius: editRadius,
+                    boxShadow: `0 16px 40px rgba(0,0,0,${editShadow / 100})`,
+                  }}
+                >
+                  <div className="relative h-full w-full overflow-hidden rounded-2xl">
+                    {previewSurface}
                   </div>
-                ) : (
-                  <div
-                    className="relative flex h-full w-full items-center justify-center"
-                    style={{
-                      padding: editPadding,
-                      borderRadius: editRadius,
-                      boxShadow: `0 16px 40px rgba(0,0,0,${editShadow / 100})`,
-                    }}
-                  >
-                    <div className="relative h-full w-full overflow-hidden rounded-2xl">
-                      {previewSurface}
-                    </div>
-                  </div>
-                )}
+                </div>
                 <div
                   className="absolute bottom-3 left-3 overflow-hidden"
                   style={{

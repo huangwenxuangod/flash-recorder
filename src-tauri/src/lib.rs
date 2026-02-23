@@ -95,7 +95,7 @@ impl Default for EditState {
     fn default() -> Self {
         Self {
             aspect: "16:9".to_string(),
-            padding: 18,
+            padding: 0,
             radius: 12,
             shadow: 20,
             camera_size: 104,
