@@ -35,6 +35,7 @@ export default defineConfig(async () => ({
       input: {
         main: resolve(__dirname, "index.html"),
         mini: resolve(__dirname, "mini.html"),
+        edit: resolve(__dirname, "edit.html"),
       },
     },
   },
