@@ -422,6 +422,9 @@ function MainApp() {
   };
 
   const openEditWindow = async () => {
+    const scaleFactor = await getCurrentWindow().scaleFactor();
+    const editWidth = Math.max(960, Math.round(1600 / scaleFactor));
+    const editHeight = Math.max(720, Math.round(900 / scaleFactor));
     const existing = await WebviewWindow.getByLabel("edit");
     if (existing) {
       await existing.setResizable(false);
@@ -432,8 +435,8 @@ function MainApp() {
     }
     new WebviewWindow("edit", {
       url: "/edit.html",
-      width: 1600,
-      height: 900,
+      width: editWidth,
+      height: editHeight,
       resizable: false,
       decorations: true,
       alwaysOnTop: false,
