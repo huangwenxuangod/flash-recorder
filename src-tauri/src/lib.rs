@@ -1,7 +1,7 @@
 use std::{
+    collections::{HashMap, VecDeque},
     fs,
-    io::Read,
-    io::Write,
+    io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
@@ -10,7 +10,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{async_runtime, Manager, State};
+use tauri::{async_runtime, Emitter, Manager, State};
 use tokio::net::UdpSocket;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
@@ -75,6 +75,99 @@ struct RecordingSession {
     child: Child,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+struct EditState {
+    aspect: String,
+    padding: u32,
+    radius: u32,
+    shadow: u32,
+    camera_size: u32,
+    camera_shape: String,
+    camera_shadow: u32,
+    camera_mirror: bool,
+    camera_blur: bool,
+    background_type: String,
+    background_preset: u32,
+}
+
+impl Default for EditState {
+    fn default() -> Self {
+        Self {
+            aspect: "16:9".to_string(),
+            padding: 18,
+            radius: 12,
+            shadow: 20,
+            camera_size: 104,
+            camera_shape: "circle".to_string(),
+            camera_shadow: 22,
+            camera_mirror: false,
+            camera_blur: false,
+            background_type: "gradient".to_string(),
+            background_preset: 0,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct ExportProfile {
+    format: String,
+    width: u32,
+    height: u32,
+    fps: u32,
+    bitrate_kbps: u32,
+}
+
+#[derive(Deserialize, Clone)]
+struct ExportRequest {
+    input_path: String,
+    output_path: String,
+    #[allow(dead_code)]
+    edit_state: EditState,
+    profile: ExportProfile,
+}
+
+#[derive(Serialize, Clone)]
+struct ExportStatus {
+    job_id: String,
+    state: String,
+    progress: f32,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ExportStartResponse {
+    job_id: String,
+}
+
+struct ExportJob {
+    job_id: String,
+    request: ExportRequest,
+}
+
+struct ExportManager {
+    queue: VecDeque<ExportJob>,
+    running: bool,
+    statuses: HashMap<String, ExportStatus>,
+    cancellations: HashMap<String, bool>,
+}
+
+struct ExportState {
+    inner: Arc<Mutex<ExportManager>>,
+}
+
+impl ExportState {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(ExportManager {
+                queue: VecDeque::new(),
+                running: false,
+                statuses: HashMap::new(),
+                cancellations: HashMap::new(),
+            })),
+        }
+    }
+}
+
 const PREVIEW_RTP_PORT: u16 = 19000;
 
 struct PreviewState {
@@ -101,6 +194,223 @@ fn write_error_log(output_dir: &PathBuf, message: &str) {
         .open(output_dir.join("error.log"))
     {
         let _ = writeln!(file, "{message}");
+    }
+}
+
+fn edit_state_path(output_path: &str) -> PathBuf {
+    let path = PathBuf::from(output_path);
+    if let Some(parent) = path.parent() {
+        parent.join("edit_state.json")
+    } else {
+        PathBuf::from("edit_state.json")
+    }
+}
+
+fn preview_path(output_path: &str) -> PathBuf {
+    let path = PathBuf::from(output_path);
+    if let Some(parent) = path.parent() {
+        parent.join("preview.mp4")
+    } else {
+        PathBuf::from("preview.mp4")
+    }
+}
+
+fn parse_duration_ms(text: &str) -> Option<u64> {
+    let marker = "Duration: ";
+    let index = text.find(marker)?;
+    let tail = &text[index + marker.len()..];
+    let duration = tail.split(',').next()?.trim();
+    let mut parts = duration.split(':');
+    let hours: f64 = parts.next()?.parse().ok()?;
+    let minutes: f64 = parts.next()?.parse().ok()?;
+    let seconds: f64 = parts.next()?.parse().ok()?;
+    let total = ((hours * 3600.0) + (minutes * 60.0) + seconds) * 1000.0;
+    Some(total.round() as u64)
+}
+
+fn get_media_duration_ms(input_path: &str) -> Option<u64> {
+    let output = Command::new("ffmpeg")
+        .args(["-i", input_path, "-hide_banner"])
+        .output()
+        .ok()?;
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    parse_duration_ms(&stderr)
+}
+
+fn emit_export_status(app: &tauri::AppHandle, status: &ExportStatus) {
+    let _ = app.emit("export_progress", status);
+}
+
+fn ensure_export_worker(app: tauri::AppHandle, state: Arc<Mutex<ExportManager>>) {
+    let should_spawn = {
+        let mut guard = state.lock().ok();
+        if let Some(manager) = guard.as_mut() {
+            if manager.running {
+                false
+            } else {
+                manager.running = true;
+                true
+            }
+        } else {
+            false
+        }
+    };
+    if should_spawn {
+        thread::spawn(move || export_worker(app, state));
+    }
+}
+
+fn export_worker(app: tauri::AppHandle, state: Arc<Mutex<ExportManager>>) {
+    loop {
+        let job = {
+            let mut guard = match state.lock() {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
+            guard.queue.pop_front()
+        };
+        let Some(job) = job else {
+            if let Ok(mut guard) = state.lock() {
+                guard.running = false;
+            }
+            return;
+        };
+        let mut status = ExportStatus {
+            job_id: job.job_id.clone(),
+            state: "running".to_string(),
+            progress: 0.0,
+            error: None,
+        };
+        if let Ok(mut guard) = state.lock() {
+            guard.statuses.insert(job.job_id.clone(), status.clone());
+        }
+        emit_export_status(&app, &status);
+        let result = run_export_job(&app, &state, &job);
+        status.state = if result.is_ok() {
+            "completed".to_string()
+        } else {
+            "failed".to_string()
+        };
+        status.progress = if result.is_ok() { 1.0 } else { status.progress };
+        status.error = result.err();
+        if let Ok(mut guard) = state.lock() {
+            guard.statuses.insert(job.job_id.clone(), status.clone());
+            guard.cancellations.remove(&job.job_id);
+        }
+        emit_export_status(&app, &status);
+    }
+}
+
+fn run_export_job(
+    app: &tauri::AppHandle,
+    state: &Arc<Mutex<ExportManager>>,
+    job: &ExportJob,
+) -> Result<(), String> {
+    let duration_ms = get_media_duration_ms(&job.request.input_path);
+    let mut args = vec![
+        "-y".to_string(),
+        "-i".to_string(),
+        job.request.input_path.clone(),
+        "-r".to_string(),
+        job.request.profile.fps.to_string(),
+    ];
+    let scale = format!(
+        "scale=w={}:h={}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2",
+        job.request.profile.width,
+        job.request.profile.height,
+        job.request.profile.width,
+        job.request.profile.height
+    );
+    args.extend(["-vf".to_string(), scale]);
+    let bitrate = format!("{}k", job.request.profile.bitrate_kbps.max(1));
+    match job.request.profile.format.as_str() {
+        "h265" | "hevc" => {
+            args.extend([
+                "-c:v".to_string(),
+                "libx265".to_string(),
+                "-preset".to_string(),
+                "fast".to_string(),
+                "-b:v".to_string(),
+                bitrate,
+            ]);
+        }
+        _ => {
+            args.extend([
+                "-c:v".to_string(),
+                "libx264".to_string(),
+                "-preset".to_string(),
+                "fast".to_string(),
+                "-pix_fmt".to_string(),
+                "yuv420p".to_string(),
+                "-b:v".to_string(),
+                bitrate,
+            ]);
+        }
+    }
+    args.extend([
+        "-c:a".to_string(),
+        "aac".to_string(),
+        "-b:a".to_string(),
+        "160k".to_string(),
+        "-progress".to_string(),
+        "pipe:1".to_string(),
+        "-nostats".to_string(),
+        job.request.output_path.clone(),
+    ]);
+    let mut child = Command::new("ffmpeg")
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|_| "ffmpeg_not_found".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("export_stdout_unavailable".to_string())?;
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let bytes = reader.read_line(&mut line).map_err(|e| e.to_string())?;
+        if bytes == 0 {
+            break;
+        }
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("out_time_ms=") {
+            if let Ok(out_time_ms) = value.parse::<u64>() {
+                if let Some(duration_ms) = duration_ms {
+                    let progress = (out_time_ms as f64 / duration_ms as f64).min(1.0);
+                    let status = ExportStatus {
+                        job_id: job.job_id.clone(),
+                        state: "running".to_string(),
+                        progress: progress as f32,
+                        error: None,
+                    };
+                    if let Ok(mut guard) = state.lock() {
+                        guard.statuses.insert(job.job_id.clone(), status.clone());
+                    }
+                    emit_export_status(app, &status);
+                }
+            }
+        }
+        let cancelled = {
+            if let Ok(guard) = state.lock() {
+                guard.cancellations.get(&job.job_id).copied().unwrap_or(false)
+            } else {
+                false
+            }
+        };
+        if cancelled {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("export_cancelled".to_string());
+        }
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("export_failed".to_string())
     }
 }
 
@@ -695,12 +1005,117 @@ fn parse_dshow_video_devices(stderr: &str) -> Vec<String> {
     devices
 }
 
+#[tauri::command]
+fn save_edit_state(output_path: String, edit_state: EditState) -> Result<(), String> {
+    let path = edit_state_path(&output_path);
+    let serialized = serde_json::to_string_pretty(&edit_state).map_err(|e| e.to_string())?;
+    fs::write(path, serialized).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn load_edit_state(output_path: String) -> Result<EditState, String> {
+    let path = edit_state_path(&output_path);
+    if !path.exists() {
+        return Ok(EditState::default());
+    }
+    let data = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn ensure_preview(output_path: String) -> Result<String, String> {
+    let preview = preview_path(&output_path);
+    if preview.exists() {
+        return Ok(preview.to_string_lossy().to_string());
+    }
+    let status = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-i",
+            &output_path,
+            "-vf",
+            "scale=854:-2",
+            "-r",
+            "30",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-pix_fmt",
+            "yuv420p",
+            "-an",
+            preview.to_string_lossy().as_ref(),
+        ])
+        .status()
+        .map_err(|_| "ffmpeg_not_found".to_string())?;
+    if status.success() {
+        Ok(preview.to_string_lossy().to_string())
+    } else {
+        Err("preview_failed".to_string())
+    }
+}
+
+#[tauri::command]
+fn start_export(
+    app: tauri::AppHandle,
+    state: State<ExportState>,
+    request: ExportRequest,
+) -> Result<ExportStartResponse, String> {
+    let job_id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis()
+        .to_string();
+    let status = ExportStatus {
+        job_id: job_id.clone(),
+        state: "queued".to_string(),
+        progress: 0.0,
+        error: None,
+    };
+    {
+        let mut guard = state.inner.lock().map_err(|_| "export_state_lock_failed")?;
+        guard.statuses.insert(job_id.clone(), status.clone());
+        guard.queue.push_back(ExportJob {
+            job_id: job_id.clone(),
+            request,
+        });
+    }
+    emit_export_status(&app, &status);
+    ensure_export_worker(app, state.inner.clone());
+    Ok(ExportStartResponse { job_id })
+}
+
+#[tauri::command]
+fn get_export_status(
+    state: State<ExportState>,
+    job_id: String,
+) -> Result<ExportStatus, String> {
+    let guard = state.inner.lock().map_err(|_| "export_state_lock_failed")?;
+    guard
+        .statuses
+        .get(&job_id)
+        .cloned()
+        .ok_or_else(|| "export_not_found".to_string())
+}
+
+#[tauri::command]
+fn cancel_export(state: State<ExportState>, job_id: String) -> Result<(), String> {
+    let mut guard = state.inner.lock().map_err(|_| "export_state_lock_failed")?;
+    guard.cancellations.insert(job_id.clone(), true);
+    if let Some(status) = guard.statuses.get_mut(&job_id) {
+        status.state = "cancelled".to_string();
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(RecordingState::new())
         .manage(PreviewState::new())
+        .manage(ExportState::new())
         .invoke_handler(tauri::generate_handler![
             start_recording,
             stop_recording,
@@ -708,7 +1123,13 @@ pub fn run() {
             list_audio_devices,
             list_video_devices,
             list_windows,
-            exclude_window_from_capture
+            exclude_window_from_capture,
+            save_edit_state,
+            load_edit_state,
+            ensure_preview,
+            start_export,
+            get_export_status,
+            cancel_export
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
