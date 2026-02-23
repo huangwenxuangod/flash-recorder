@@ -362,7 +362,7 @@ const EditPage = () => {
             width: size.width,
             height: size.height,
             fps: 60,
-            bitrate_kbps: 8000,
+            bitrate_kbps: 12000,
           },
         },
       });
