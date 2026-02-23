@@ -30,6 +30,17 @@ struct StartRecordingRequest {
     format: String,
     mic_device: Option<String>,
     camera_device: Option<String>,
+    capture_mode: Option<String>,
+    window_title: Option<String>,
+    region: Option<CaptureRegion>,
+}
+
+#[derive(Deserialize, Clone)]
+struct CaptureRegion {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
 }
 
 #[derive(Serialize)]
@@ -209,6 +220,11 @@ fn start_recording(
     let fps = if request.fps == 0 { 60 } else { request.fps };
     let _ = &request.resolution;
 
+    let capture_mode = request
+        .capture_mode
+        .as_deref()
+        .unwrap_or("screen")
+        .to_string();
     let mut args = vec![
         "-y".into(),
         "-thread_queue_size".into(),
@@ -219,9 +235,32 @@ fn start_recording(
         "gdigrab".into(),
         "-framerate".into(),
         fps.to_string(),
-        "-i".into(),
-        "desktop".into(),
     ];
+
+    if capture_mode == "window" {
+        let window_title = request
+            .window_title
+            .clone()
+            .ok_or("window_title_required")?;
+        args.extend(["-i".into(), format!("title={window_title}")]);
+    } else if capture_mode == "region" {
+        let region = request.region.clone().ok_or("region_required")?;
+        if region.width <= 0 || region.height <= 0 {
+            return Err("invalid_region".into());
+        }
+        args.extend([
+            "-offset_x".into(),
+            region.x.to_string(),
+            "-offset_y".into(),
+            region.y.to_string(),
+            "-video_size".into(),
+            format!("{}x{}", region.width, region.height),
+            "-i".into(),
+            "desktop".into(),
+        ]);
+    } else {
+        args.extend(["-i".into(), "desktop".into()]);
+    }
 
     let mut input_index: usize = 1;
     let mut camera_index: Option<usize> = None;
@@ -497,6 +536,59 @@ fn list_video_devices() -> Result<Vec<String>, String> {
     list_video_devices_internal()
 }
 
+#[tauri::command]
+fn list_windows() -> Result<Vec<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            EnumWindows, GetWindowTextLengthW, GetWindowTextW, IsWindowVisible,
+        };
+
+        unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            if IsWindowVisible(hwnd) == 0 {
+                return 1;
+            }
+            let length = GetWindowTextLengthW(hwnd);
+            if length == 0 {
+                return 1;
+            }
+            let mut buffer = vec![0u16; (length + 1) as usize];
+            let written = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32);
+            if written <= 0 {
+                return 1;
+            }
+            let title = String::from_utf16_lossy(&buffer[..written as usize]);
+            let trimmed = title.trim();
+            if trimmed.is_empty() {
+                return 1;
+            }
+            let titles = unsafe { &mut *(lparam as *mut Vec<String>) };
+            if !titles.iter().any(|item| item == trimmed) {
+                titles.push(trimmed.to_string());
+            }
+            1
+        }
+
+        let mut titles: Vec<String> = Vec::new();
+        let result = unsafe {
+            EnumWindows(Some(enum_windows_proc), &mut titles as *mut _ as LPARAM)
+        };
+        if result == 0 {
+            return Err("list_windows_failed".into());
+        }
+        if titles.is_empty() {
+            return Ok(Vec::new());
+        }
+        titles.sort();
+        return Ok(titles);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(Vec::new())
+    }
+}
+
 fn list_video_devices_internal() -> Result<Vec<String>, String> {
     let (stderr_output, stdout_output) = Command::new("ffmpeg")
         .args(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
@@ -598,6 +690,7 @@ pub fn run() {
             webrtc_create_answer,
             list_audio_devices,
             list_video_devices,
+            list_windows,
             exclude_window_from_capture
         ])
         .run(tauri::generate_context!())

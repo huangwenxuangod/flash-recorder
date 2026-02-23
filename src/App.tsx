@@ -1,14 +1,31 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { FiCamera, FiChevronDown, FiMic, FiPlay, FiVideo } from "react-icons/fi";
+import { FiCamera, FiChevronDown, FiMic, FiMonitor, FiPlay, FiVideo } from "react-icons/fi";
 import "./App.css";
 
 type SelectOption = {
   value: string;
   label: string;
 };
+
+type CaptureMode = "screen" | "window" | "region";
+
+type CaptureRegion = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type RegionSelectionPayload = {
+  id: number;
+  status: "selected" | "cancel";
+  region?: CaptureRegion;
+};
+
+const REGION_SELECTION_KEY = "regionSelection";
 
 type SelectMenuProps = {
   value: string;
@@ -90,7 +107,117 @@ function SelectMenu({ value, options, onChange, icon }: SelectMenuProps) {
   );
 }
 
-function App() {
+function RegionPicker() {
+  const [selectionRect, setSelectionRect] = useState<CaptureRegion | null>(null);
+  const selectionStartRef = useRef<{ x: number; y: number } | null>(null);
+  const selectionRectRef = useRef<CaptureRegion | null>(null);
+  const [errorMessage, setErrorMessage] = useState("");
+
+  useEffect(() => {
+    const appWindow = getCurrentWindow();
+    const apply = async () => {
+      await appWindow.show();
+      await appWindow.setFocus();
+      await appWindow.setDecorations(false);
+      await appWindow.setResizable(false);
+      await appWindow.setAlwaysOnTop(true);
+      await appWindow.setFullscreen(true);
+    };
+    apply().catch((error) => setErrorMessage(String(error)));
+  }, []);
+
+  useEffect(() => {
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        const payload: RegionSelectionPayload = { id: Date.now(), status: "cancel" };
+        localStorage.setItem(REGION_SELECTION_KEY, JSON.stringify(payload));
+        getCurrentWindow()
+          .close()
+          .catch((error) => setErrorMessage(String(error)));
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, []);
+
+  const finishSelection = async (rect: CaptureRegion) => {
+    const ratio = window.devicePixelRatio || 1;
+    const payload: RegionSelectionPayload = {
+      id: Date.now(),
+      status: "selected",
+      region: {
+        x: Math.round((window.screenX + rect.x) * ratio),
+        y: Math.round((window.screenY + rect.y) * ratio),
+        width: Math.round(rect.width * ratio),
+        height: Math.round(rect.height * ratio),
+      },
+    };
+    localStorage.setItem(REGION_SELECTION_KEY, JSON.stringify(payload));
+    await getCurrentWindow().close();
+  };
+
+  return (
+    <main
+      className="fixed inset-0 z-50 cursor-crosshair bg-black/60"
+      onMouseDown={(event) => {
+        selectionStartRef.current = { x: event.clientX, y: event.clientY };
+        const rect = {
+          x: event.clientX,
+          y: event.clientY,
+          width: 0,
+          height: 0,
+        };
+        selectionRectRef.current = rect;
+        setSelectionRect(rect);
+      }}
+      onMouseMove={(event) => {
+        if (!selectionStartRef.current) {
+          return;
+        }
+        const start = selectionStartRef.current;
+        const x = Math.min(start.x, event.clientX);
+        const y = Math.min(start.y, event.clientY);
+        const width = Math.abs(event.clientX - start.x);
+        const height = Math.abs(event.clientY - start.y);
+        const rect = { x, y, width, height };
+        selectionRectRef.current = rect;
+        setSelectionRect(rect);
+      }}
+      onMouseUp={async () => {
+        const rect = selectionRectRef.current;
+        if (!rect || rect.width < 10 || rect.height < 10) {
+          const payload: RegionSelectionPayload = { id: Date.now(), status: "cancel" };
+          localStorage.setItem(REGION_SELECTION_KEY, JSON.stringify(payload));
+          await getCurrentWindow().close();
+          return;
+        }
+        await finishSelection(rect);
+      }}
+    >
+      {selectionRect ? (
+        <div
+          className="absolute rounded-md border-2 border-cyan-400 bg-cyan-400/10"
+          style={{
+            left: selectionRect.x,
+            top: selectionRect.y,
+            width: selectionRect.width,
+            height: selectionRect.height,
+          }}
+        />
+      ) : null}
+      <div className="absolute left-6 top-6 rounded-full border border-white/10 bg-slate-950/80 px-4 py-2 text-xs text-slate-200">
+        拖拽选择区域，按 Esc 取消
+      </div>
+      {errorMessage ? (
+        <div className="absolute bottom-6 left-6 rounded-full border border-red-500/30 bg-red-500/10 px-4 py-2 text-xs text-red-200">
+          {errorMessage}
+        </div>
+      ) : null}
+    </main>
+  );
+}
+
+function MainApp() {
   const [isRecording, setIsRecording] = useState(false);
   const [camera, setCamera] = useState("auto");
   const [mic, setMic] = useState("auto");
@@ -100,23 +227,15 @@ function App() {
   const [errorMessage, setErrorMessage] = useState("");
   const [audioDevices, setAudioDevices] = useState<string[]>([]);
   const [videoDevices, setVideoDevices] = useState<string[]>([]);
+  const [captureMode, setCaptureMode] = useState<CaptureMode>("screen");
+  const [windowOptions, setWindowOptions] = useState<string[]>([]);
+  const [windowPickerOpen, setWindowPickerOpen] = useState(false);
+  const awaitingRegionRef = useRef(false);
+  const [pendingRegion, setPendingRegion] = useState<CaptureRegion | null>(null);
 
-  useEffect(() => {
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key === "recordingActive") {
-        const active = event.newValue === "1";
-        setIsRecording(active);
-      }
-      if (event.key === "recordingFinished" && event.newValue === "1") {
-        setViewMode("edit");
-        setOutputPath(localStorage.getItem("recordingOutputPath") ?? "");
-        setLogPath(localStorage.getItem("recordingLogPath") ?? "");
-        localStorage.removeItem("recordingFinished");
-      }
-    };
-    window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
-  }, []);
+  const updateAwaitingRegion = (value: boolean) => {
+    awaitingRegionRef.current = value;
+  };
 
   useEffect(() => {
     invoke<string[]>("list_audio_devices")
@@ -156,7 +275,11 @@ function App() {
     });
   };
 
-  const startRecording = async () => {
+  const startRecording = async (options?: {
+    captureMode?: CaptureMode;
+    windowTitle?: string;
+    region?: CaptureRegion;
+  }) => {
     setErrorMessage("");
     try {
       const response = await invoke<{
@@ -170,6 +293,9 @@ function App() {
           format: "h264",
           mic_device: mic,
           camera_device: camera,
+          capture_mode: options?.captureMode ?? "screen",
+          window_title: options?.windowTitle ?? null,
+          region: options?.region ?? null,
         },
       });
       const startedAt = Date.now();
@@ -200,8 +326,107 @@ function App() {
     if (isRecording) {
       return;
     }
-    await startRecording();
+    if (captureMode === "window") {
+      await openWindowPicker();
+      return;
+    }
+    if (captureMode === "region") {
+      await openRegionPicker();
+      return;
+    }
+    await startRecording({ captureMode: "screen" });
   };
+
+  const openWindowPicker = async () => {
+    setErrorMessage("");
+    try {
+      const windows = await invoke<string[]>("list_windows");
+      setWindowOptions(windows);
+      setWindowPickerOpen(true);
+    } catch (error) {
+      setErrorMessage(String(error));
+    }
+  };
+
+  const openRegionPicker = async () => {
+    if (awaitingRegionRef.current) {
+      return;
+    }
+    updateAwaitingRegion(true);
+    const appWindow = getCurrentWindow();
+    try {
+      await appWindow.hide();
+      const existing = await WebviewWindow.getByLabel("region-picker");
+      if (existing) {
+        await existing.show();
+        await existing.setFocus();
+        return;
+      }
+      new WebviewWindow("region-picker", {
+        url: "/index.html?mode=region-picker",
+        width: window.screen.width,
+        height: window.screen.height,
+        x: 0,
+        y: 0,
+        resizable: false,
+        decorations: false,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        fullscreen: true,
+        title: "Region Picker",
+      });
+    } catch (error) {
+      updateAwaitingRegion(false);
+      await appWindow.show();
+      await appWindow.setFocus();
+      setErrorMessage(String(error));
+    }
+  };
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === "recordingActive") {
+        const active = event.newValue === "1";
+        setIsRecording(active);
+      }
+      if (event.key === "recordingFinished" && event.newValue === "1") {
+        setViewMode("edit");
+        setOutputPath(localStorage.getItem("recordingOutputPath") ?? "");
+        setLogPath(localStorage.getItem("recordingLogPath") ?? "");
+        localStorage.removeItem("recordingFinished");
+      }
+      if (event.key === REGION_SELECTION_KEY && event.newValue) {
+        if (!awaitingRegionRef.current) {
+          return;
+        }
+        let payload: RegionSelectionPayload | null = null;
+        try {
+          payload = JSON.parse(event.newValue) as RegionSelectionPayload;
+        } catch {
+          payload = null;
+        }
+        updateAwaitingRegion(false);
+        const appWindow = getCurrentWindow();
+        if (!payload || payload.status === "cancel" || !payload.region) {
+          appWindow.show().then(() => appWindow.setFocus()).catch(() => null);
+          return;
+        }
+        setPendingRegion(payload.region);
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
+
+  useEffect(() => {
+    if (!pendingRegion) {
+      return;
+    }
+    startRecording({ captureMode: "region", region: pendingRegion }).catch((error) =>
+      setErrorMessage(String(error))
+    );
+    setPendingRegion(null);
+  }, [pendingRegion, startRecording]);
 
   if (viewMode === "edit") {
     return (
@@ -251,6 +476,12 @@ function App() {
     ...audioDevices.map((device) => ({ value: device, label: device })),
   ];
 
+  const captureOptions: SelectOption[] = [
+    { value: "screen", label: "屏幕录制" },
+    { value: "window", label: "窗口录制" },
+    { value: "region", label: "区域录制" },
+  ];
+
   return (
     <main className="flex h-screen w-screen items-center justify-center bg-slate-950 text-slate-100">
       <div className="h-full w-full">
@@ -280,6 +511,12 @@ function App() {
 
             <div className="space-y-3">
               <SelectMenu
+                value={captureMode}
+                options={captureOptions}
+                onChange={(value) => setCaptureMode(value as CaptureMode)}
+                icon={<FiMonitor className="text-slate-500" />}
+              />
+              <SelectMenu
                 value={camera}
                 options={cameraOptions}
                 onChange={setCamera}
@@ -301,8 +538,53 @@ function App() {
           </section>
         </div>
       </div>
+      {windowPickerOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+          <div className="w-[360px] rounded-2xl border border-white/10 bg-slate-950/95 p-4 shadow-2xl">
+            <div className="text-xs uppercase tracking-[0.2em] text-slate-400">选择窗口</div>
+            <div className="mt-3 max-h-64 overflow-auto">
+              {windowOptions.length === 0 ? (
+                <div className="rounded-xl border border-slate-800/80 bg-slate-950/70 px-3 py-2 text-xs text-slate-400">
+                  未发现可录制窗口
+                </div>
+              ) : (
+                windowOptions.map((title) => (
+                  <button
+                    key={title}
+                    type="button"
+                    className="mb-2 w-full rounded-xl border border-slate-800/80 bg-slate-950/80 px-3 py-2 text-left text-sm text-slate-100 transition hover:border-slate-700/80 hover:bg-slate-900/80"
+                    onClick={async () => {
+                      setWindowPickerOpen(false);
+                      await startRecording({ captureMode: "window", windowTitle: title });
+                    }}
+                  >
+                    {title}
+                  </button>
+                ))
+              )}
+            </div>
+            <div className="mt-3 flex justify-end">
+              <button
+                type="button"
+                className="rounded-full border border-white/10 bg-slate-900/70 px-4 py-2 text-xs text-slate-300 transition hover:border-white/20"
+                onClick={() => setWindowPickerOpen(false)}
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
+}
+
+function App() {
+  const isRegionPicker = useMemo(
+    () => new URLSearchParams(window.location.search).get("mode") === "region-picker",
+    []
+  );
+  return isRegionPicker ? <RegionPicker /> : <MainApp />;
 }
 
 export default App;
