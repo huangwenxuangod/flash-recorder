@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { FiCamera, FiChevronDown, FiMic, FiMonitor, FiPlay, FiVideo } from "react-icons/fi";
 import "./App.css";
@@ -283,15 +283,17 @@ function MainApp() {
   const openEditWindow = async () => {
     const existing = await WebviewWindow.getByLabel("edit");
     if (existing) {
+      await existing.setResizable(false);
+      await existing.setSize(new PhysicalSize(1600, 900));
       await existing.show();
       await existing.setFocus();
       return;
     }
     new WebviewWindow("edit", {
       url: "/edit.html",
-      width: 1280,
-      height: 860,
-      resizable: true,
+      width: 1600,
+      height: 900,
+      resizable: false,
       decorations: true,
       alwaysOnTop: false,
       skipTaskbar: false,
