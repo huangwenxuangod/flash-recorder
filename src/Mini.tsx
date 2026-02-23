@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -9,14 +10,16 @@ function Mini() {
   const [isRecording, setIsRecording] = useState(
     () => localStorage.getItem("recordingActive") === "1"
   );
-  const [camera, setCamera] = useState(() => localStorage.getItem("selectedCamera") ?? "no-camera");
   const [seconds, setSeconds] = useState(() => {
     const startedAt = Number(localStorage.getItem("recordingStart") ?? 0);
     return startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
   });
   const [errorMessage, setErrorMessage] = useState("");
+  const [selectedCamera, setSelectedCamera] = useState(
+    () => localStorage.getItem("selectedCamera") ?? "auto"
+  );
+  const [avatarStream, setAvatarStream] = useState<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
@@ -60,12 +63,12 @@ function Mini() {
         const active = event.newValue === "1";
         setIsRecording(active);
       }
+      if (event.key === "selectedCamera" && event.newValue) {
+        setSelectedCamera(event.newValue);
+      }
       if (event.key === "recordingStart" && event.newValue) {
         const startedAt = Number(event.newValue);
         setSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
-      }
-      if (event.key === "selectedCamera" && event.newValue) {
-        setCamera(event.newValue);
       }
     };
     window.addEventListener("storage", handleStorage);
@@ -73,38 +76,46 @@ function Mini() {
   }, []);
 
   useEffect(() => {
-    if (camera === "no-camera") {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
-      }
-      if (videoRef.current) {
-        videoRef.current.srcObject = null;
-      }
+    if (!videoRef.current) {
       return;
     }
-    const startPreview = async () => {
+    videoRef.current.srcObject = avatarStream;
+  }, [avatarStream]);
+
+  useEffect(() => {
+    const stopStream = () => {
+      if (avatarStream) {
+        avatarStream.getTracks().forEach((track) => track.stop());
+        setAvatarStream(null);
+      }
+    };
+    const openPreview = async () => {
+      if (!isRecording || selectedCamera === "no-camera") {
+        stopStream();
+        return;
+      }
       try {
-        const deviceList = await navigator.mediaDevices.enumerateDevices();
-        const target = deviceList.find(
-          (device) => device.kind === "videoinput" && device.label === camera
-        );
-        const constraints =
-          camera !== "auto" && target?.deviceId
-            ? { video: { deviceId: { exact: target.deviceId } } }
-            : { video: true };
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        streamRef.current?.getTracks().forEach((track) => track.stop());
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
+        const baseStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        baseStream.getTracks().forEach((track) => track.stop());
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter((device) => device.kind === "videoinput");
+        let constraints: MediaStreamConstraints = { video: true };
+        if (selectedCamera !== "auto") {
+          const matched = videoDevices.find((device) => device.label === selectedCamera);
+          if (matched?.deviceId) {
+            constraints = { video: { deviceId: { exact: matched.deviceId } } };
+          }
         }
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        setAvatarStream(stream);
       } catch (error) {
+        stopStream();
         setErrorMessage(String(error));
       }
     };
-    startPreview();
-  }, [camera]);
+    openPreview();
+    return () => stopStream();
+  }, [isRecording, selectedCamera]);
 
   const timerText = useMemo(() => {
     const minutes = Math.floor(seconds / 60)
@@ -141,13 +152,17 @@ function Mini() {
     <main className="h-full w-full bg-slate-950">
       <div className="flex h-full w-full items-center p-1.5">
         <div className="flex w-full items-center gap-2 rounded-lg border border-white/10 bg-gradient-to-r from-slate-950/90 via-slate-900/90 to-slate-950/90 px-2.5 py-1.5 shadow-2xl">
-          <div className="h-8 w-8 overflow-hidden rounded-md border border-white/10 bg-slate-800/80">
-            {camera === "no-camera" ? (
-              <div className="flex h-full w-full items-center justify-center text-[8px] text-slate-400">
-                Avatar
-              </div>
+          <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-md border border-white/10 bg-slate-800/80">
+            {avatarStream ? (
+              <video
+                ref={videoRef}
+                className="h-full w-full object-cover"
+                autoPlay
+                muted
+                playsInline
+              />
             ) : (
-              <video ref={videoRef} className="h-full w-full object-cover" autoPlay muted playsInline />
+              <span className="text-[8px] text-slate-400">Avatar</span>
             )}
           </div>
           <div className="flex flex-col">
@@ -172,3 +187,8 @@ function Mini() {
 }
 
 export default Mini;
+
+const rootElement = document.getElementById("root");
+if (rootElement) {
+  ReactDOM.createRoot(rootElement).render(<Mini />);
+}

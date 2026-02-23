@@ -12,9 +12,9 @@
   "app": {
     "windows": [
       {
-        "title": "tauri-app",
-        "width": 800,
-        "height": 600
+        "title": "Flash Recorder",
+        "width": 420,
+        "height": 760
       }
     ],
     "security": {

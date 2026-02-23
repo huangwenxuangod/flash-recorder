@@ -10,10 +10,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
-
-#[cfg(target_os = "windows")]
-use tauri::WindowExtWindows;
+use tauri::{Manager, State};
 
 #[derive(Deserialize)]
 struct StartRecordingRequest {
@@ -52,8 +49,6 @@ impl RecordingState {
 struct RecordingSession {
     id: String,
     started_at: Instant,
-    output_path: PathBuf,
-    log_path: PathBuf,
     child: Child,
 }
 
@@ -71,10 +66,14 @@ fn write_error_log(output_dir: &PathBuf, message: &str) {
 fn exclude_window_from_capture(app: tauri::AppHandle, label: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        use windows_sys::Win32::Graphics::Gdi::{SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE};
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+        };
 
-        let window = app.get_window(&label).ok_or("window_not_found")?;
+        let window = app.get_webview_window(&label).ok_or("window_not_found")?;
         let hwnd = window.hwnd().map_err(|_| "hwnd_unavailable")?;
+        let hwnd: HWND = hwnd.0 as HWND;
         let result = unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) };
         if result == 0 {
             return Err("exclude_from_capture_failed".into());
@@ -116,9 +115,14 @@ fn start_recording(
     let log_path = output_dir.join("ffmpeg.log");
 
     let fps = if request.fps == 0 { 60 } else { request.fps };
+    let _ = &request.resolution;
 
     let mut args = vec![
         "-y".into(),
+        "-thread_queue_size".into(),
+        "512".into(),
+        "-rtbufsize".into(),
+        "256M".into(),
         "-f".into(),
         "gdigrab".into(),
         "-framerate".into(),
@@ -146,6 +150,8 @@ fn start_recording(
 
     if let Some(camera_name) = selected_camera.as_ref() {
         args.extend([
+            "-thread_queue_size".into(),
+            "512".into(),
             "-f".into(),
             "dshow".into(),
             "-i".into(),
@@ -166,21 +172,21 @@ fn start_recording(
 
     if let Some(device_name) = selected_device.as_ref() {
         args.extend([
+            "-thread_queue_size".into(),
+            "512".into(),
             "-f".into(),
             "dshow".into(),
             "-i".into(),
             format!("audio={}", device_name),
         ]);
         audio_index = Some(input_index);
-        input_index += 1;
     } else {
         args.push("-an".into());
     }
 
     if let Some(camera_input) = camera_index {
-        let camera_size = 240;
         let filter = format!(
-            "[{camera_input}:v]scale={camera_size}:-1,format=rgba,crop={camera_size}:{camera_size}:(iw-{camera_size})/2:(ih-{camera_size})/2,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(hypot(X-W/2,Y-H/2),W/2),255,0)'[cam];[0:v][cam]overlay=W-w-24:H-h-24[v]"
+            "[{camera_input}:v]scale=iw*0.25:-1,format=rgba,crop='min(iw,ih)':'min(iw,ih)',hflip,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(pow(max(abs(X-W/2)-W/3,0),2)+pow(max(abs(Y-H/2)-W/3,0),2),W*W/36),255,0)'[cam];[0:v][cam]overlay=W-w-24:H-h-24:shortest=1[v]"
         );
         args.extend([
             "-filter_complex".into(),
@@ -234,8 +240,6 @@ fn start_recording(
     *guard = Some(RecordingSession {
         id: session_id.clone(),
         started_at: Instant::now(),
-        output_path: output_path.clone(),
-        log_path: log_path.clone(),
         child,
     });
 
@@ -280,23 +284,30 @@ fn list_audio_devices() -> Result<Vec<String>, String> {
 }
 
 fn list_audio_devices_internal() -> Result<Vec<String>, String> {
-    let output = Command::new("ffmpeg")
+    let (stderr_output, stdout_output) = Command::new("ffmpeg")
         .args(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .and_then(|mut child| {
-            let mut stderr = String::new();
+            let mut stderr_bytes = Vec::new();
             if let Some(mut stderr_reader) = child.stderr.take() {
-                let _ = stderr_reader.read_to_string(&mut stderr);
+                let _ = stderr_reader.read_to_end(&mut stderr_bytes);
+            }
+            let mut stdout_bytes = Vec::new();
+            if let Some(mut stdout_reader) = child.stdout.take() {
+                let _ = stdout_reader.read_to_end(&mut stdout_bytes);
             }
             let _ = child.wait();
-            Ok(stderr)
+            let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
+            let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
+            Ok((stderr, stdout))
         })
         .map_err(|_| "ffmpeg_not_found".to_string())?;
 
-    Ok(parse_dshow_audio_devices(&output))
+    let combined = format!("{stderr_output}\n{stdout_output}");
+    Ok(parse_dshow_audio_devices(&combined))
 }
 
 #[tauri::command]
@@ -305,23 +316,30 @@ fn list_video_devices() -> Result<Vec<String>, String> {
 }
 
 fn list_video_devices_internal() -> Result<Vec<String>, String> {
-    let output = Command::new("ffmpeg")
+    let (stderr_output, stdout_output) = Command::new("ffmpeg")
         .args(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .and_then(|mut child| {
-            let mut stderr = String::new();
+            let mut stderr_bytes = Vec::new();
             if let Some(mut stderr_reader) = child.stderr.take() {
-                let _ = stderr_reader.read_to_string(&mut stderr);
+                let _ = stderr_reader.read_to_end(&mut stderr_bytes);
+            }
+            let mut stdout_bytes = Vec::new();
+            if let Some(mut stdout_reader) = child.stdout.take() {
+                let _ = stdout_reader.read_to_end(&mut stdout_bytes);
             }
             let _ = child.wait();
-            Ok(stderr)
+            let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
+            let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
+            Ok((stderr, stdout))
         })
         .map_err(|_| "ffmpeg_not_found".to_string())?;
 
-    Ok(parse_dshow_video_devices(&output))
+    let combined = format!("{stderr_output}\n{stdout_output}");
+    Ok(parse_dshow_video_devices(&combined))
 }
 
 fn parse_dshow_audio_devices(stderr: &str) -> Vec<String> {
@@ -336,7 +354,10 @@ fn parse_dshow_audio_devices(stderr: &str) -> Vec<String> {
             in_audio = false;
             continue;
         }
-        if !in_audio {
+        if !in_audio && !line.contains("(audio)") {
+            continue;
+        }
+        if line.contains("(none)") {
             continue;
         }
         if let Some(start) = line.find('"') {
@@ -364,7 +385,10 @@ fn parse_dshow_video_devices(stderr: &str) -> Vec<String> {
             in_video = false;
             continue;
         }
-        if !in_video {
+        if !in_video && !line.contains("(video)") {
+            continue;
+        }
+        if line.contains("(none)") {
             continue;
         }
         if let Some(start) = line.find('"') {
