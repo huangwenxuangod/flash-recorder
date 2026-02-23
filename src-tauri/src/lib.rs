@@ -244,7 +244,24 @@ fn start_recording(
             .ok_or("window_title_required")?;
         args.extend(["-i".into(), format!("title={window_title}")]);
     } else if capture_mode == "region" {
-        let region = request.region.clone().ok_or("region_required")?;
+        let mut region = request.region.clone().ok_or("region_required")?;
+        if region.width <= 0 || region.height <= 0 {
+            return Err("invalid_region".into());
+        }
+        if region.x % 2 != 0 {
+            region.x += 1;
+            region.width -= 1;
+        }
+        if region.y % 2 != 0 {
+            region.y += 1;
+            region.height -= 1;
+        }
+        if region.width % 2 != 0 {
+            region.width -= 1;
+        }
+        if region.height % 2 != 0 {
+            region.height -= 1;
+        }
         if region.width <= 0 || region.height <= 0 {
             return Err("invalid_region".into());
         }
