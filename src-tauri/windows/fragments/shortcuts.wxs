@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="ProgramMenuFolder">
+      <Component Id="AppStartMenuShortcut" Guid="*">
+        <Shortcut
+          Id="StartMenuShortcut"
+          Name="Flash Recorder"
+          Description="Flash Recorder"
+          Target="[INSTALLDIR]tauri-app.exe"
+          WorkingDirectory="INSTALLDIR" />
+        <RemoveFolder Id="RemoveStartMenuShortcut" On="uninstall" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\tauri-apps\FlashRecorder"
+          Name="installed"
+          Type="string"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+    <DirectoryRef Id="DesktopFolder">
+      <Component Id="AppDesktopShortcut" Guid="*">
+        <Shortcut
+          Id="DesktopShortcut"
+          Name="Flash Recorder"
+          Description="Flash Recorder"
+          Target="[INSTALLDIR]tauri-app.exe"
+          WorkingDirectory="INSTALLDIR" />
+        <RemoveFolder Id="RemoveDesktopShortcut" On="uninstall" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\tauri-apps\FlashRecorder"
+          Name="desktop"
+          Type="string"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
+    env,
     fs,
     io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
@@ -22,6 +23,28 @@ use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocalWriter;
 use webrtc_util::Unmarshal;
+
+fn ffmpeg_binary() -> String {
+    if let Ok(status) = Command::new("ffmpeg")
+        .args(["-version"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        if status.success() {
+            return "ffmpeg".to_string();
+        }
+    }
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(dir) = exe_path.parent() {
+            let candidate = dir.join("resources").join("ffmpeg").join(if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" });
+            if candidate.exists() {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+    }
+    "ffmpeg".to_string()
+}
 
 #[derive(Deserialize)]
 struct StartRecordingRequest {
@@ -232,7 +255,7 @@ fn parse_duration_ms(text: &str) -> Option<u64> {
 }
 
 fn get_media_duration_ms(input_path: &str) -> Option<u64> {
-    let output = Command::new("ffmpeg")
+    let output = Command::new(ffmpeg_binary())
         .args(["-i", input_path, "-hide_banner"])
         .output()
         .ok()?;
@@ -564,7 +587,7 @@ fn run_export_job(
         "-nostats".to_string(),
         job.request.output_path.clone(),
     ]);
-    let mut child = Command::new("ffmpeg")
+    let mut child = Command::new(ffmpeg_binary())
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -999,7 +1022,7 @@ fn start_recording(
 
     let log_file = fs::File::create(&log_path).map_err(|e| log_error(e.to_string()))?;
 
-    let child = Command::new("ffmpeg")
+    let child = Command::new(ffmpeg_binary())
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -1096,7 +1119,7 @@ fn list_audio_devices() -> Result<Vec<String>, String> {
 }
 
 fn list_audio_devices_internal() -> Result<Vec<String>, String> {
-    let (stderr_output, stdout_output) = Command::new("ffmpeg")
+    let (stderr_output, stdout_output) = Command::new(ffmpeg_binary())
         .args(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1181,7 +1204,7 @@ fn list_windows() -> Result<Vec<String>, String> {
 }
 
 fn list_video_devices_internal() -> Result<Vec<String>, String> {
-    let (stderr_output, stdout_output) = Command::new("ffmpeg")
+    let (stderr_output, stdout_output) = Command::new(ffmpeg_binary())
         .args(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1293,7 +1316,7 @@ fn ensure_preview(output_path: String) -> Result<String, String> {
     if preview.exists() {
         return Ok(preview.to_string_lossy().to_string());
     }
-    let status = Command::new("ffmpeg")
+    let status = Command::new(ffmpeg_binary())
         .args([
             "-y",
             "-i",
