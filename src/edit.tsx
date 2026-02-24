@@ -393,8 +393,9 @@ const EditPage = () => {
     }
     return 16 / 9;
   }, [editAspect]);
-  const previewFrameHeight = previewBaseHeight;
-  const previewFrameWidth = Math.round(previewFrameHeight * previewAspect);
+  const evenize = (n: number) => (n % 2 === 0 ? n : n - 1);
+  const previewFrameHeight = evenize(previewBaseHeight);
+  const previewFrameWidth = evenize(Math.round(previewFrameHeight * previewAspect));
   const exportDisabled =
     !outputPath || exportStatus?.state === "running" || exportStatus?.state === "queued";
   const cameraRadius =
@@ -597,9 +598,7 @@ const EditPage = () => {
                     boxShadow: `0 16px 40px rgba(0,0,0,${editShadow / 100})`,
                   }}
                 >
-                  <div className="relative h-full w-full overflow-hidden rounded-2xl">
-                    {previewSurface}
-                  </div>
+                  <div className="relative h-full w-full overflow-hidden rounded-2xl">{previewSurface}</div>
                 </div>
                 <div
                   className="absolute overflow-hidden"

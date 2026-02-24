@@ -347,8 +347,11 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     let shadow_alpha = ((shadow as f32) / 120.0).clamp(0.0, 0.6);
     let shadow_offset = (shadow / 6).max(0);
     let bg_source = background_source(edit_state, output_w, output_h, profile.fps);
+    let shrink = if edit_state.aspect == "9:16" { 0.92f32 } else { 1.0f32 };
+    let target_w = evenize(((inner_w as f32) * shrink).round() as i32).max(2);
+    let target_h = evenize(((inner_h as f32) * shrink).round() as i32).max(2);
     let base = format!(
-        "{bg_source}[bg];[0:v]scale={inner_w}:{inner_h}:force_original_aspect_ratio=decrease,format=rgba"
+        "{bg_source}[bg];[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,format=rgba"
     );
     let rounded = if radius > 0 {
         let alpha_expr = rounded_alpha_expr(radius);
@@ -358,19 +361,25 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     };
     let base_label = if has_camera { "base" } else { "v" };
     let base = if shadow > 0 {
+        let shadow_x_expr = format!("{}+({}-overlay_w)/2+{}", pos_x, inner_w, shadow_offset);
+        let shadow_y_expr = format!("{}+({}-overlay_h)/2+{}", pos_y, inner_h, shadow_offset);
+        let fg_x_expr = format!("{}+({}-overlay_w)/2", pos_x, inner_w);
+        let fg_y_expr = format!("{}+({}-overlay_h)/2", pos_y, inner_h);
         format!(
-            "{rounded},split=2[fg][shadow];[shadow]boxblur={shadow_blur}:1,colorchannelmixer=aa={shadow_alpha}[shadow];[bg][shadow]overlay=x={shadow_x}:y={shadow_y}:shortest=1[bg2];[bg2][fg]overlay=x={expr_x}:y={expr_y}:shortest=1[{base_label}]",
-            shadow_x = pos_x + (inner_w - 0) / 2 - 0 / 2 + shadow_offset,
-            shadow_y = pos_y + (inner_h - 0) / 2 - 0 / 2 + shadow_offset,
-            expr_x = format!("{}+({}-overlay_w)/2", pos_x, inner_w),
-            expr_y = format!("{}+({}-overlay_h)/2", pos_y, inner_h),
+            "{rounded},split=2[fg][shadow];[shadow]boxblur={shadow_blur}:1,colorchannelmixer=aa={shadow_alpha}[shadow];[bg][shadow]overlay=x={shadow_x}:y={shadow_y}:shortest=1[bg2];[bg2][fg]overlay=x={fg_x}:y={fg_y}:shortest=1[{base_label}]",
+            shadow_x = shadow_x_expr,
+            shadow_y = shadow_y_expr,
+            fg_x = fg_x_expr,
+            fg_y = fg_y_expr,
             base_label = base_label
         )
     } else {
+        let fg_x_expr = format!("{}+({}-overlay_w)/2", pos_x, inner_w);
+        let fg_y_expr = format!("{}+({}-overlay_h)/2", pos_y, inner_h);
         format!(
-            "{rounded}[fg];[bg][fg]overlay=x={expr_x}:y={expr_y}:shortest=1[{base_label}]",
-            expr_x = format!("{}+({}-overlay_w)/2", pos_x, inner_w),
-            expr_y = format!("{}+({}-overlay_h)/2", pos_y, inner_h),
+            "{rounded}[fg];[bg][fg]overlay=x={fg_x}:y={fg_y}:shortest=1[{base_label}]",
+            fg_x = fg_x_expr,
+            fg_y = fg_y_expr,
             base_label = base_label
         )
     };
@@ -378,7 +387,8 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
         return base;
     }
     let scale = (output_w as f32 / 420.0).max(0.1);
-    let mut camera_size = (edit_state.camera_size as f32 * scale).round() as i32;
+    let camera_scale = if edit_state.aspect == "9:16" { 2.0 } else { 1.0 };
+    let mut camera_size = (edit_state.camera_size as f32 * scale * camera_scale).round() as i32;
     camera_size = evenize(camera_size.max(2));
     let offset = (12.0 * scale).round() as i32;
     let (camera_x, camera_y) = match edit_state.camera_position.as_str() {
