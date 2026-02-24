@@ -63,6 +63,49 @@ jobs:
       - name: Build Tauri (Windows)
         run: pnpm run tauri build
 
+      - name: Create self-signed certificate (Code Signing)
+        shell: pwsh
+        run: |
+          $subject = "CN=Flash Recorder SelfSign"
+          $cert = New-SelfSignedCertificate -Type CodeSigning -Subject $subject -KeyExportPolicy Exportable -KeyLength 2048 -HashAlgorithm sha256 -CertStoreLocation Cert:\CurrentUser\My
+          $pass = [guid]::NewGuid().ToString()
+          $secure = ConvertTo-SecureString -String $pass -Force -AsPlainText
+          Export-PfxCertificate -Cert $cert -FilePath "cert.pfx" -Password $secure | Out-Null
+          Add-Content -Path $env:GITHUB_ENV -Value "PFX_FILE=cert.pfx"
+          Add-Content -Path $env:GITHUB_ENV -Value "PFX_PASSWORD=$pass"
+
+      - name: Locate signtool.exe
+        shell: pwsh
+        run: |
+          $tool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter "signtool.exe" | Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } | Select-Object -First 1
+          if ($null -eq $tool) { throw "signtool.exe not found" }
+          Add-Content -Path $env:GITHUB_ENV -Value ("SIGNTOOL=" + $tool.FullName)
+
+      - name: Sign MSI and NSIS installers (self-signed)
+        shell: pwsh
+        run: |
+          $bundle = "src-tauri/target/release/bundle"
+          $files = @()
+          $files += Get-ChildItem "$bundle/msi/*.msi" -ErrorAction SilentlyContinue
+          $files += Get-ChildItem "$bundle/nsis/*.exe" -ErrorAction SilentlyContinue
+          if ($files.Count -eq 0) { throw "No installer files found to sign." }
+          $tsUrl = "http://timestamp.digicert.com"
+          foreach ($f in $files) {
+            try {
+              & $env:SIGNTOOL sign /f $env:PFX_FILE /p $env:PFX_PASSWORD /tr $tsUrl /td sha256 $f.FullName
+            } catch {
+              & $env:SIGNTOOL sign /f $env:PFX_FILE /p $env:PFX_PASSWORD /t $tsUrl $f.FullName
+            }
+          }
+
+      - name: Verify signatures
+        shell: pwsh
+        run: |
+          $bundle = "src-tauri/target/release/bundle"
+          Get-ChildItem "$bundle/msi/*.msi","$bundle/nsis/*.exe" -ErrorAction SilentlyContinue | ForEach-Object {
+            & $env:SIGNTOOL verify /pa $_.FullName
+          }
+
       - name: Set release metadata
         if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
         shell: pwsh
