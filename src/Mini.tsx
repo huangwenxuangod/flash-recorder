@@ -31,7 +31,7 @@ function Mini() {
       const miniHeight = 80;
       await appWindow.setSize(new LogicalSize(miniWidth, miniHeight));
       const posX = 20;
-      const posY = Math.max(20, window.screen.availHeight - miniHeight - 20);
+      const posY = Math.max(20, window.screen.availHeight - miniHeight - (20 + 32));
       await appWindow.setPosition(new LogicalPosition(posX, posY));
     };
     applyMiniLayout();

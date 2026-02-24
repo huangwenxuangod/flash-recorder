@@ -406,7 +406,7 @@ function MainApp() {
     const miniWidth = 300;
     const miniHeight = 80;
     const posX = 20;
-    const posY = Math.max(20, window.screen.availHeight - miniHeight - 20);
+    const posY = Math.max(20, window.screen.availHeight - miniHeight - (20 + 32));
     new WebviewWindow("mini", {
       url: "/mini.html",
       width: miniWidth,
