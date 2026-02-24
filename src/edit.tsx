@@ -335,6 +335,13 @@ const EditPage = () => {
       if (status.state === "completed" && lastExportStateRef.current !== "completed") {
         toast.success("导出完成");
       }
+      if (status.state === "failed" && lastExportStateRef.current !== "failed") {
+        const message =
+          typeof status.error === "string" && status.error.trim().length > 0
+            ? status.error.split("\n")[0].slice(0, 140)
+            : "导出失败";
+        toast.error(message);
+      }
       lastExportStateRef.current = status.state;
       if (["completed", "failed", "cancelled"].includes(status.state)) {
         activeJobIdRef.current = null;
@@ -512,6 +519,7 @@ const EditPage = () => {
         progress: 0,
         error: String(error),
       });
+      toast.error(String(error).split("\n")[0].slice(0, 140));
     }
   };
   const togglePreviewPlayback = () => {
