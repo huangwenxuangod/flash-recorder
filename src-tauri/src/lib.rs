@@ -348,7 +348,7 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     let shadow_offset = (shadow / 6).max(0);
     let bg_source = background_source(edit_state, output_w, output_h, profile.fps);
     let base = format!(
-        "{bg_source}[bg];[0:v]scale={inner_w}:{inner_h}:force_original_aspect_ratio=decrease,format=rgba,pad={inner_w}:{inner_h}:(ow-iw)/2:(oh-ih)/2:color=0x00000000"
+        "{bg_source}[bg];[0:v]scale={inner_w}:{inner_h}:force_original_aspect_ratio=decrease,format=rgba"
     );
     let rounded = if radius > 0 {
         let alpha_expr = rounded_alpha_expr(radius);
@@ -359,13 +359,20 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     let base_label = if has_camera { "base" } else { "v" };
     let base = if shadow > 0 {
         format!(
-            "{rounded},split=2[fg][shadow];[shadow]boxblur={shadow_blur}:1,colorchannelmixer=aa={shadow_alpha}[shadow];[bg][shadow]overlay=x={shadow_x}:y={shadow_y}:shortest=1[bg2];[bg2][fg]overlay=x={pos_x}:y={pos_y}:shortest=1[{base_label}]",
-            shadow_x = pos_x + shadow_offset,
-            shadow_y = pos_y + shadow_offset,
+            "{rounded},split=2[fg][shadow];[shadow]boxblur={shadow_blur}:1,colorchannelmixer=aa={shadow_alpha}[shadow];[bg][shadow]overlay=x={shadow_x}:y={shadow_y}:shortest=1[bg2];[bg2][fg]overlay=x={expr_x}:y={expr_y}:shortest=1[{base_label}]",
+            shadow_x = pos_x + (inner_w - 0) / 2 - 0 / 2 + shadow_offset,
+            shadow_y = pos_y + (inner_h - 0) / 2 - 0 / 2 + shadow_offset,
+            expr_x = format!("{}+({}-overlay_w)/2", pos_x, inner_w),
+            expr_y = format!("{}+({}-overlay_h)/2", pos_y, inner_h),
             base_label = base_label
         )
     } else {
-        format!("{rounded}[fg];[bg][fg]overlay=x={pos_x}:y={pos_y}:shortest=1[{base_label}]", base_label = base_label)
+        format!(
+            "{rounded}[fg];[bg][fg]overlay=x={expr_x}:y={expr_y}:shortest=1[{base_label}]",
+            expr_x = format!("{}+({}-overlay_w)/2", pos_x, inner_w),
+            expr_y = format!("{}+({}-overlay_h)/2", pos_y, inner_h),
+            base_label = base_label
+        )
     };
     if !has_camera {
         return base;
@@ -899,7 +906,7 @@ fn start_recording(
 
     if let Some(camera_input) = camera_index {
         let filter = format!(
-            "[{camera_input}:v]crop='min(iw,ih)':'min(iw,ih)',hflip,split=2[cam_preview][cam_avatar];[cam_preview]fps=15,scale=160:160:force_original_aspect_ratio=increase,crop=160:160,format=yuv420p[preview];[cam_avatar]fps=30,scale=160:160:force_original_aspect_ratio=increase,crop=160:160,format=yuv420p[avatar]"
+            "[{camera_input}:v]crop='min(iw,ih)':'min(iw,ih)',hflip,split=2[cam_preview][cam_avatar];[cam_preview]fps=20,scale=240:240:force_original_aspect_ratio=increase,crop=240:240,format=yuv420p[preview];[cam_avatar]fps=30,scale=240:240:force_original_aspect_ratio=increase,crop=240:240,format=yuv420p[avatar]"
         );
         args.extend([
             "-filter_complex".into(),
@@ -947,6 +954,8 @@ fn start_recording(
             "libx264".into(),
             "-preset".into(),
             "veryfast".into(),
+                "-crf".into(),
+                "23".into(),
             "-pix_fmt".into(),
             "yuv420p".into(),
             camera_path.to_string_lossy().to_string(),
@@ -1280,7 +1289,7 @@ fn ensure_preview(output_path: String) -> Result<String, String> {
             "-i",
             &output_path,
             "-vf",
-            "scale=854:-2",
+            "scale=1024:-2",
             "-r",
             "30",
             "-c:v",
