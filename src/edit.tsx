@@ -1,20 +1,12 @@
-import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
-import {
-  FiCamera,
-  FiChevronDown,
-  FiImage,
-  FiMinus,
-  FiPause,
-  FiPlay,
-  FiPlus,
-  FiSliders,
-} from "react-icons/fi";
+import { FiCamera, FiUser, FiImage, FiMinus, FiPause, FiPlay, FiPlus, FiSliders } from "react-icons/fi";
 import { Toaster, toast } from "react-hot-toast";
 import "./App.css";
+import { SelectMenu, type SelectOption } from "./components/SelectMenu";
 
 type EditState = {
   aspect: string;
@@ -28,6 +20,7 @@ type EditState = {
   camera_blur: boolean;
   background_type: string;
   background_preset: number;
+  camera_position?: "top_left" | "top_right" | "bottom_left" | "bottom_right";
 };
 
 type ExportStatus = {
@@ -43,90 +36,13 @@ const aspectOptions: SelectOption[] = [
   { value: "9:16", label: "9:16" },
 ];
 
-type SelectOption = {
-  value: string;
-  label: string;
-};
-
-type SelectMenuProps = {
-  value: string;
-  options: SelectOption[];
-  onChange: (value: string) => void;
-  icon: ReactNode;
-};
-
-function SelectMenu({ value, options, onChange, icon }: SelectMenuProps) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const current = options.find((option) => option.value === value) ?? options[0];
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (!rootRef.current) {
-        return;
-      }
-      if (rootRef.current.contains(event.target as Node)) {
-        return;
-      }
-      setOpen(false);
-    };
-    window.addEventListener("mousedown", handleClickOutside);
-    return () => window.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  return (
-    <div className="relative" ref={rootRef}>
-      <button
-        className="flex w-full items-center justify-between gap-3 rounded-full border border-white/10 bg-slate-950/70 px-3 py-1.5 text-left transition hover:border-cyan-400/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400/30"
-        type="button"
-        onClick={() => setOpen((prev) => !prev)}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-      >
-        <span className="flex items-center gap-3">
-          {icon}
-          <span className="text-sm font-medium text-slate-100">
-            {current ? current.label : ""}
-          </span>
-        </span>
-        <FiChevronDown
-          className={`h-4 w-4 text-slate-500 transition ${open ? "rotate-180" : ""}`}
-        />
-      </button>
-      {open ? (
-        <div
-          className="absolute left-0 right-0 z-50 mt-2 rounded-2xl border border-white/10 bg-slate-950/95 p-1 shadow-2xl backdrop-blur"
-          role="listbox"
-        >
-          <div className="max-h-56 overflow-auto">
-            {options.map((option) => {
-              const selected = option.value === value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  role="option"
-                  aria-selected={selected}
-                  onClick={() => {
-                    onChange(option.value);
-                    setOpen(false);
-                  }}
-                  className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${
-                    selected
-                      ? "bg-slate-800/80 text-white"
-                      : "text-slate-200 hover:bg-slate-800/60"
-                  }`}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
+type CameraPosition = "top_left" | "top_right" | "bottom_left" | "bottom_right";
+const cameraPositionOptions: SelectOption[] = [
+  { value: "top_left", label: "左上角" },
+  { value: "top_right", label: "右上角" },
+  { value: "bottom_left", label: "左下角" },
+  { value: "bottom_right", label: "右下角" },
+];
 
 const EditPage = () => {
   const [outputPath, setOutputPath] = useState("");
@@ -141,7 +57,7 @@ const EditPage = () => {
   const [cameraBlur, setCameraBlur] = useState(false);
   const [backgroundType, setBackgroundType] = useState<"gradient" | "wallpaper">("gradient");
   const [backgroundPreset, setBackgroundPreset] = useState(0);
-  const [activeTab, setActiveTab] = useState<"camera" | "background" | "frame">("camera");
+  const [activeTab, setActiveTab] = useState<"camera" | "avatar" | "background" | "frame">("camera");
   const [exportStatus, setExportStatus] = useState<ExportStatus | null>(null);
   const [previewSrc, setPreviewSrc] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -166,6 +82,7 @@ const EditPage = () => {
   const [toolbarPos, setToolbarPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 });
   const [isMobile, setIsMobile] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [cameraPosition, setCameraPosition] = useState<CameraPosition>("bottom_left");
 
   useEffect(() => {
     setOutputPath(localStorage.getItem("recordingOutputPath") ?? "");
@@ -198,6 +115,12 @@ const EditPage = () => {
             ? state.camera_shape
             : "circle";
         const backgroundValue = state.background_type === "wallpaper" ? "wallpaper" : "gradient";
+        const cameraPosValue =
+          state.camera_position === "top_left" ||
+          state.camera_position === "top_right" ||
+          state.camera_position === "bottom_right"
+            ? (state.camera_position as CameraPosition)
+            : "bottom_left";
         setEditAspect(aspect);
         setEditPadding(state.padding);
         setEditRadius(state.radius);
@@ -209,6 +132,7 @@ const EditPage = () => {
         setCameraBlur(state.camera_blur);
         setBackgroundType(backgroundValue);
         setBackgroundPreset(state.background_preset);
+        setCameraPosition(cameraPosValue);
         hasLoadedRef.current = true;
       })
       .catch(() => {
@@ -313,6 +237,7 @@ const EditPage = () => {
       camera_blur: cameraBlur,
       background_type: backgroundType,
       background_preset: backgroundPreset,
+      camera_position: cameraPosition,
     };
     invoke("save_edit_state", { outputPath, editState }).catch(() => null);
   }, [
@@ -328,6 +253,7 @@ const EditPage = () => {
     cameraBlur,
     backgroundType,
     backgroundPreset,
+    cameraPosition,
   ]);
 
   useEffect(() => {
@@ -525,6 +451,7 @@ const EditPage = () => {
       camera_blur: cameraBlur,
       background_type: backgroundType,
       background_preset: backgroundPreset,
+      camera_position: cameraPosition,
     };
     try {
       const response = await invoke<{ job_id: string }>("start_export", {
@@ -675,17 +602,22 @@ const EditPage = () => {
                   </div>
                 </div>
                 <div
-                  className="absolute bottom-3 left-3 overflow-hidden"
+                  className="absolute overflow-hidden"
                   style={{
                     width: cameraSize,
                     height: cameraSize,
                     borderRadius: cameraRadius,
                     boxShadow: `0 16px 40px rgba(0,0,0,${cameraShadow / 120}), 0 0 0 1px rgba(255,255,255,0.1), inset 0 1px 0 rgba(255,255,255,0.25)`,
                     transform: cameraMirror ? "scaleX(-1)" : "none",
-                    background: cameraBlur
-                      ? "rgba(15, 23, 42, 0.25)"
-                      : "rgba(15, 23, 42, 0.18)",
+                    background: cameraBlur ? "rgba(15, 23, 42, 0.25)" : "rgba(15, 23, 42, 0.18)",
                     backdropFilter: cameraBlur ? "blur(18px) saturate(140%)" : "blur(10px)",
+                    ...(cameraPosition === "top_left"
+                      ? { top: 12, left: 12 }
+                      : cameraPosition === "top_right"
+                      ? { top: 12, right: 12 }
+                      : cameraPosition === "bottom_right"
+                      ? { bottom: 12, right: 12 }
+                      : { bottom: 12, left: 12 }),
                   }}
                 >
                   {avatarSrc ? (
@@ -937,6 +869,17 @@ const EditPage = () => {
                       />
                     </button>
                   </div>
+                  <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2">
+                    <span className="text-xs text-slate-400">相机位置</span>
+                    <div className="w-32">
+                      <SelectMenu
+                        value={cameraPosition}
+                        options={cameraPositionOptions}
+                        onChange={(value) => setCameraPosition(value as CameraPosition)}
+                        icon={<FiUser className="text-slate-500" />}
+                      />
+                    </div>
+                  </div>
                 </div>
               ) : null}
 
@@ -1118,6 +1061,17 @@ const EditPage = () => {
                       >
                         <span className={`block h-4 w-4 rounded-full bg-white transition ${cameraBlur ? "translate-x-5" : "translate-x-1"}`} />
                       </button>
+                    </div>
+                    <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2">
+                      <span className="text-xs text-slate-400">相机位置</span>
+                      <div className="w-32">
+                        <SelectMenu
+                          value={cameraPosition}
+                          options={cameraPositionOptions}
+                          onChange={(value) => setCameraPosition(value as CameraPosition)}
+                          icon={<FiUser className="text-slate-500" />}
+                        />
+                      </div>
                     </div>
                   </div>
                 ) : null}

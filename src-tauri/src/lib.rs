@@ -89,6 +89,7 @@ struct EditState {
     camera_blur: bool,
     background_type: String,
     background_preset: u32,
+    camera_position: String,
 }
 
 impl Default for EditState {
@@ -105,6 +106,7 @@ impl Default for EditState {
             camera_blur: false,
             background_type: "gradient".to_string(),
             background_preset: 0,
+            camera_position: "bottom_left".to_string(),
         }
     }
 }
@@ -372,8 +374,15 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     let mut camera_size = (edit_state.camera_size as f32 * scale).round() as i32;
     camera_size = evenize(camera_size.max(2));
     let offset = (12.0 * scale).round() as i32;
-    let camera_x = offset;
-    let camera_y = (output_h - camera_size - offset).max(0);
+    let (camera_x, camera_y) = match edit_state.camera_position.as_str() {
+        "top_left" => (offset, offset),
+        "top_right" => ((output_w - camera_size - offset).max(0), offset),
+        "bottom_right" => (
+            (output_w - camera_size - offset).max(0),
+            (output_h - camera_size - offset).max(0),
+        ),
+        _ => (offset, (output_h - camera_size - offset).max(0)),
+    };
     let camera_radius = match edit_state.camera_shape.as_str() {
         "circle" => camera_size / 2,
         "rounded" => (18.0 * scale).round() as i32,
