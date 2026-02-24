@@ -77,7 +77,7 @@ function SelectMenu({ value, options, onChange, icon }: SelectMenuProps) {
   return (
     <div className="relative" ref={rootRef}>
       <button
-        className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-800/80 bg-slate-950/90 px-3 py-2.5 text-left transition hover:border-slate-700/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400/30"
+        className="flex w-full items-center justify-between gap-3 rounded-full border border-white/10 bg-slate-950/70 px-3 py-1.5 text-left transition hover:border-cyan-400/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400/30"
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         aria-haspopup="listbox"
@@ -95,7 +95,7 @@ function SelectMenu({ value, options, onChange, icon }: SelectMenuProps) {
       </button>
       {open ? (
         <div
-          className="absolute left-0 right-0 z-50 mt-2 rounded-2xl border border-slate-800/80 bg-slate-950/95 p-1 shadow-2xl backdrop-blur"
+          className="absolute left-0 right-0 z-50 mt-2 rounded-2xl border border-white/10 bg-slate-950/95 p-1 shadow-2xl backdrop-blur"
           role="listbox"
         >
           <div className="max-h-56 overflow-auto">
@@ -161,6 +161,11 @@ const EditPage = () => {
   const [previewBaseHeight, setPreviewBaseHeight] = useState(236);
   const [previewZoom, setPreviewZoom] = useState(1);
   const lastExportStateRef = useRef<string | null>(null);
+  const exportToastIdRef = useRef<string | null>(null);
+  const sectionRef = useRef<HTMLDivElement | null>(null);
+  const [toolbarPos, setToolbarPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 });
+  const [isMobile, setIsMobile] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => {
     setOutputPath(localStorage.getItem("recordingOutputPath") ?? "");
@@ -332,10 +337,21 @@ const EditPage = () => {
         return;
       }
       setExportStatus(status);
+      if (status.state === "running" && !exportToastIdRef.current) {
+        exportToastIdRef.current = toast.loading("正在导出…", { duration: Infinity });
+      }
       if (status.state === "completed" && lastExportStateRef.current !== "completed") {
+        if (exportToastIdRef.current) {
+          toast.dismiss(exportToastIdRef.current);
+          exportToastIdRef.current = null;
+        }
         toast.success("导出完成");
       }
       if (status.state === "failed" && lastExportStateRef.current !== "failed") {
+        if (exportToastIdRef.current) {
+          toast.dismiss(exportToastIdRef.current);
+          exportToastIdRef.current = null;
+        }
         const message =
           typeof status.error === "string" && status.error.trim().length > 0
             ? status.error.split("\n")[0].slice(0, 140)
@@ -353,11 +369,38 @@ const EditPage = () => {
   }, []);
 
   useEffect(() => {
+    const updateToolbar = () => {
+      const area = previewAreaRef.current;
+      const section = sectionRef.current;
+      if (!area || !section) {
+        return;
+      }
+      const areaRect = area.getBoundingClientRect();
+      const sectionRect = section.getBoundingClientRect();
+      const offsetY = 8;
+      const left =
+        Math.round(areaRect.left + areaRect.width / 2) - Math.round(sectionRect.left);
+      const top = Math.round(areaRect.bottom + offsetY) - Math.round(sectionRect.top);
+      setToolbarPos({ left, top });
+    };
+    updateToolbar();
+    const observer = new ResizeObserver(updateToolbar);
+    if (previewAreaRef.current) {
+      observer.observe(previewAreaRef.current);
+    }
+    window.addEventListener("resize", updateToolbar);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateToolbar);
+    };
+  }, [editAspect, previewBaseHeight]);
+
+  useEffect(() => {
     const appWindow = getCurrentWindow();
     const applyEditLayout = async () => {
       await appWindow.setDecorations(true);
-      await appWindow.setResizable(false);
-      await appWindow.setSize(new PhysicalSize(1600, 900));
+      await appWindow.setResizable(true);
+      await appWindow.setMinSize(new PhysicalSize(960, 640));
     };
     applyEditLayout();
   }, []);
@@ -372,13 +415,25 @@ const EditPage = () => {
       if (!rect.width) {
         return;
       }
-      const height = rect.width / (16 / 9);
+      const height = rect.width / previewAspect;
       setPreviewBaseHeight(Math.round(height));
     };
     updateSize();
     const observer = new ResizeObserver(updateSize);
     observer.observe(node);
     return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const updateMobile = () => {
+      setIsMobile(window.innerWidth < 1024);
+      if (window.innerWidth >= 1024) {
+        setDrawerOpen(false);
+      }
+    };
+    updateMobile();
+    window.addEventListener("resize", updateMobile);
+    return () => window.removeEventListener("resize", updateMobile);
   }, []);
 
   const backgroundPresets = useMemo(
@@ -418,27 +473,7 @@ const EditPage = () => {
     !outputPath || exportStatus?.state === "running" || exportStatus?.state === "queued";
   const cameraRadius =
     cameraShape === "circle" ? "9999px" : cameraShape === "rounded" ? "18px" : "6px";
-  const exportStatusLabel = useMemo(() => {
-    if (!exportStatus) {
-      return "未导出";
-    }
-    if (exportStatus.state === "running") {
-      return `导出中 ${Math.round(exportStatus.progress * 100)}%`;
-    }
-    if (exportStatus.state === "queued") {
-      return "排队中";
-    }
-    if (exportStatus.state === "completed") {
-      return "已完成";
-    }
-    if (exportStatus.state === "cancelled") {
-      return "已取消";
-    }
-    if (exportStatus.error) {
-      return `失败: ${exportStatus.error}`;
-    }
-    return "失败";
-  }, [exportStatus]);
+  // 统一使用 Toast 展示导出状态
 
   const previewLabel = useMemo(() => {
     if (previewLoading) {
@@ -451,6 +486,8 @@ const EditPage = () => {
   }, [previewError, previewLoading]);
   const previewSeekMax = Math.max(previewDuration, 0.001);
   const previewControlsDisabled = !previewSrc || previewLoading || !!previewError;
+  const exportBusy =
+    exportStatus?.state === "running" || exportStatus?.state === "queued";
 
   const buildExportPath = (input: string) => {
     const sep = input.includes("\\") ? "\\" : "/";
@@ -512,6 +549,9 @@ const EditPage = () => {
         progress: 0,
         error: null,
       });
+      if (!exportToastIdRef.current) {
+        exportToastIdRef.current = toast.loading("正在导出…", { duration: Infinity });
+      }
     } catch (error) {
       setExportStatus({
         job_id: "",
@@ -591,6 +631,7 @@ const EditPage = () => {
       src={previewSrc}
       muted
       playsInline
+      style={{ background: "transparent" }}
     />
   ) : (
     <div className="flex h-full items-center justify-center text-[11px] text-slate-400">
@@ -600,12 +641,13 @@ const EditPage = () => {
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
-      <div className="mx-auto flex min-h-screen w-full max-w-4xl flex-col px-3 py-3">
+      <div className="mx-auto flex min-h-screen w-full flex-col px-3 py-3">
         <div className="flex flex-1 gap-2.5">
-          <section className="flex min-w-0 flex-1 flex-col items-center gap-2.5 rounded-3xl border border-white/5 bg-slate-900/40 p-2.5 shadow-2xl">
-            <div className="flex w-full items-center justify-end text-[11px] text-slate-400">
-              <div className="text-slate-500">Preview</div>
-            </div>
+          <section
+            className="relative flex min-w-0 flex-1 flex-col items-center gap-2.5 rounded-3xl border border-white/5 bg-slate-900/40 p-2.5 shadow-2xl"
+            ref={sectionRef}
+          >
+            {/* 删除 Preview 行 */}
 
             <div
               className="relative flex w-full items-center justify-center"
@@ -660,47 +702,56 @@ const EditPage = () => {
                     </div>
                   )}
                 </div>
-                <div className="absolute bottom-1 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-slate-950/80 px-3 py-1.5 text-[10px] text-slate-200">
-                  <div className="w-20">
-                    <SelectMenu
-                      value={editAspect}
-                      options={aspectOptions}
-                      onChange={(value) => setEditAspect(value as "16:9" | "1:1" | "9:16")}
-                      icon={<FiSliders className="text-slate-500" />}
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={togglePreviewPlayback}
-                    disabled={previewControlsDisabled}
-                    className={`flex items-center gap-2 rounded-full border px-2.5 py-1 transition ${
-                      previewControlsDisabled
-                        ? "border-white/10 bg-slate-900/50 text-slate-500"
-                        : "border-white/10 bg-slate-950/70 text-slate-200 hover:border-cyan-400/50"
-                    }`}
-                  >
-                    {previewPlaying ? <FiPause /> : <FiPlay />}
-                    <span>{previewPlaying ? "暂停" : "播放"}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleExport}
-                    disabled={exportDisabled}
-                    className={`flex items-center gap-2 rounded-full border px-2.5 py-1 transition ${
-                      exportDisabled
-                        ? "border-white/10 bg-slate-900/50 text-slate-500"
-                        : "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
-                    }`}
-                  >
-                    导出
-                  </button>
-                  <span className="text-[9px] text-slate-400">{exportStatusLabel}</span>
-                </div>
+                {/* 悬浮工具栏移动到外层，避免被 overflow-hidden 裁剪 */}
               
               </div>
             </div>
+            <div
+              className="pointer-events-auto absolute z-50 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-[10px] text-slate-200"
+              style={{ left: toolbarPos.left, top: toolbarPos.top }}
+            >
+              <div className="w-24">
+                <SelectMenu
+                  value={editAspect}
+                  options={aspectOptions}
+                  onChange={(value) => setEditAspect(value as "16:9" | "1:1" | "9:16")}
+                  icon={<FiSliders className="text-slate-500" />}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={togglePreviewPlayback}
+                disabled={previewControlsDisabled}
+                className={`flex items-center gap-2 rounded-full border border-white/10 px-2.5 py-1 transition ${
+                  previewControlsDisabled
+                    ? "bg-slate-900/50 text-slate-500"
+                    : "bg-slate-950/70 text-slate-200 hover:border-cyan-400/50"
+                }`}
+              >
+                {previewPlaying ? <FiPause /> : <FiPlay />}
+                <span>{previewPlaying ? "暂停" : "播放"}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleExport}
+                disabled={exportDisabled}
+                className={`flex items-center gap-2 rounded-full border border-white/10 px-2.5 py-1 transition ${
+                  exportDisabled
+                    ? "bg-slate-900/50 text-slate-500"
+                    : "bg-slate-950/70 text-slate-200 hover:border-cyan-400/50"
+                }`}
+              >
+                {exportBusy ? (
+                  <span className="mr-1 inline-block h-3 w-3 animate-spin rounded-full border-2 border-slate-300 border-r-transparent" />
+                ) : null}
+                <span>导出</span>
+              </button>
+            </div>
 
-            <div className="flex w-full items-center gap-2 rounded-xl border border-white/5 bg-slate-900/50 px-2 py-1.5">
+            <div
+              className="flex w-full items-center gap-2 rounded-xl border border-white/5 bg-slate-900/50 px-2 py-1.5"
+              style={{ marginTop: 48 }}
+            >
               <button
                 type="button"
                 onClick={() => setPreviewZoom((value) => Math.max(1, Number((value - 0.1).toFixed(2))))}
@@ -748,11 +799,19 @@ const EditPage = () => {
             <Toaster position="top-center" toastOptions={{ duration: 1600 }} />
           </section>
 
-          <aside className="flex w-48 gap-2">
+          <aside
+            className="flex gap-2"
+            style={{
+              width: isMobile ? 56 : "clamp(280px, 24vw, 380px)",
+            }}
+          >
             <div className="flex flex-col gap-2 rounded-2xl border border-white/5 bg-slate-900/60 p-1.5">
               <button
                 type="button"
-                onClick={() => setActiveTab("camera")}
+                onClick={() => {
+                  setActiveTab("camera");
+                  if (isMobile) setDrawerOpen(true);
+                }}
                 className={`flex h-8 w-8 items-center justify-center rounded-lg border ${
                   activeTab === "camera"
                     ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
@@ -763,7 +822,10 @@ const EditPage = () => {
               </button>
               <button
                 type="button"
-                onClick={() => setActiveTab("background")}
+                onClick={() => {
+                  setActiveTab("background");
+                  if (isMobile) setDrawerOpen(true);
+                }}
                 className={`flex h-8 w-8 items-center justify-center rounded-lg border ${
                   activeTab === "background"
                     ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
@@ -774,7 +836,10 @@ const EditPage = () => {
               </button>
               <button
                 type="button"
-                onClick={() => setActiveTab("frame")}
+                onClick={() => {
+                  setActiveTab("frame");
+                  if (isMobile) setDrawerOpen(true);
+                }}
                 className={`flex h-8 w-8 items-center justify-center rounded-lg border ${
                   activeTab === "frame"
                     ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
@@ -785,7 +850,8 @@ const EditPage = () => {
               </button>
             </div>
 
-            <div className="flex-1 rounded-2xl border border-white/5 bg-slate-900/60 p-2.5 text-xs text-slate-300">
+            {!isMobile ? (
+              <div className="flex-1 rounded-2xl border border-white/5 bg-slate-900/60 p-2.5 text-xs text-slate-300">
               {activeTab === "camera" ? (
                 <div className="space-y-3">
                   <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500">
@@ -965,8 +1031,176 @@ const EditPage = () => {
                   </div>
                 </div>
               ) : null}
-            </div>
+              </div>
+            ) : null}
           </aside>
+          {isMobile && drawerOpen ? (
+            <div className="fixed inset-y-0 right-0 z-50 w-[min(90vw,380px)] rounded-l-2xl border border-white/5 bg-slate-900/90 p-3 text-xs text-slate-300 backdrop-blur">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Settings</div>
+                <button
+                  type="button"
+                  onClick={() => setDrawerOpen(false)}
+                  className="h-7 w-7 rounded-lg border border-white/10 bg-slate-950/60 text-slate-400"
+                  aria-label="关闭"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="space-y-3">
+                {activeTab === "camera" ? (
+                  <div className="space-y-3">
+                    <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Camera</div>
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span>Size</span>
+                        <span>{cameraSize}px</span>
+                      </div>
+                      <input
+                        className="mt-2 w-full"
+                        type="range"
+                        min={80}
+                        max={170}
+                        value={cameraSize}
+                        onChange={(event) => setCameraSize(Number(event.target.value))}
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {(["circle", "rounded", "square"] as const).map((shape) => (
+                        <button
+                          key={shape}
+                          type="button"
+                          onClick={() => setCameraShape(shape)}
+                          className={`flex-1 rounded-full border px-2 py-1 ${
+                            cameraShape === shape
+                              ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
+                              : "border-white/10 bg-slate-950/60 text-slate-400"
+                          }`}
+                        >
+                          {shape}
+                        </button>
+                      ))}
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span>Shadow</span>
+                        <span>{cameraShadow}%</span>
+                      </div>
+                      <input
+                        className="mt-2 w-full"
+                        type="range"
+                        min={0}
+                        max={60}
+                        value={cameraShadow}
+                        onChange={(event) => setCameraShadow(Number(event.target.value))}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2">
+                      <span>Mirror</span>
+                      <button
+                        type="button"
+                        onClick={() => setCameraMirror((prev) => !prev)}
+                        className={`h-5 w-10 rounded-full border transition ${
+                          cameraMirror ? "border-cyan-400/60 bg-cyan-400/30" : "border-white/10 bg-slate-900/80"
+                        }`}
+                      >
+                        <span className={`block h-4 w-4 rounded-full bg-white transition ${cameraMirror ? "translate-x-5" : "translate-x-1"}`} />
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2">
+                      <span>Blur</span>
+                      <button
+                        type="button"
+                        onClick={() => setCameraBlur((prev) => !prev)}
+                        className={`h-5 w-10 rounded-full border transition ${
+                          cameraBlur ? "border-cyan-400/60 bg-cyan-400/30" : "border-white/10 bg-slate-900/80"
+                        }`}
+                      >
+                        <span className={`block h-4 w-4 rounded-full bg-white transition ${cameraBlur ? "translate-x-5" : "translate-x-1"}`} />
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+                {activeTab === "background" ? (
+                  <div className="space-y-3">
+                    <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Background</div>
+                    <div className="flex items-center gap-2">
+                      {(["gradient", "wallpaper"] as const).map((type) => (
+                        <button
+                          key={type}
+                          type="button"
+                          onClick={() => setBackgroundType(type)}
+                          className={`flex-1 rounded-full border px-2 py-1 ${
+                            backgroundType === type ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-200" : "border-white/10 bg-slate-950/60 text-slate-400"
+                          }`}
+                        >
+                          {type === "gradient" ? "Gradient" : "Wallpaper"}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(backgroundType === "gradient" ? backgroundPresets.gradients : backgroundPresets.wallpapers).map((preset, index) => (
+                        <button
+                          key={`${backgroundType}-${preset}`}
+                          type="button"
+                          onClick={() => setBackgroundPreset(index)}
+                          className={`h-10 rounded-xl border ${backgroundPreset === index ? "border-cyan-400/60" : "border-white/10"}`}
+                          style={{ background: preset }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {activeTab === "frame" ? (
+                  <div className="space-y-3">
+                    <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Frame</div>
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span>Padding</span>
+                        <span>{editPadding}px</span>
+                      </div>
+                      <input
+                        className="mt-2 w-full"
+                        type="range"
+                        min={0}
+                        max={60}
+                        value={editPadding}
+                        onChange={(event) => setEditPadding(Number(event.target.value))}
+                      />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span>Radius</span>
+                        <span>{editRadius}px</span>
+                      </div>
+                      <input
+                        className="mt-2 w-full"
+                        type="range"
+                        min={0}
+                        max={28}
+                        value={editRadius}
+                        onChange={(event) => setEditRadius(Number(event.target.value))}
+                      />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span>Shadow</span>
+                        <span>{editShadow}%</span>
+                      </div>
+                      <input
+                        className="mt-2 w-full"
+                        type="range"
+                        min={0}
+                        max={50}
+                        value={editShadow}
+                        onChange={(event) => setEditShadow(Number(event.target.value))}
+                      />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </main>

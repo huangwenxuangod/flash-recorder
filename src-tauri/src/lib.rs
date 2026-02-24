@@ -346,7 +346,7 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     let shadow_offset = (shadow / 6).max(0);
     let bg_source = background_source(edit_state, output_w, output_h, profile.fps);
     let base = format!(
-        "{bg_source}[bg];[0:v]scale={inner_w}:{inner_h}:force_original_aspect_ratio=decrease,pad={inner_w}:{inner_h}:(ow-iw)/2:(oh-ih)/2,format=rgba"
+        "{bg_source}[bg];[0:v]scale={inner_w}:{inner_h}:force_original_aspect_ratio=decrease,format=rgba,pad={inner_w}:{inner_h}:(ow-iw)/2:(oh-ih)/2:color=0x00000000"
     );
     let rounded = if radius > 0 {
         let alpha_expr = rounded_alpha_expr(radius);
