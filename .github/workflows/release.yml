@@ -76,6 +76,9 @@ jobs:
           $pass = [guid]::NewGuid().ToString()
           $secure = ConvertTo-SecureString -String $pass -Force -AsPlainText
           Export-PfxCertificate -Cert $cert -FilePath "cert.pfx" -Password $secure | Out-Null
+          Export-Certificate -Cert $cert -FilePath "cert.cer" | Out-Null
+          Import-Certificate -FilePath "cert.cer" -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
+          Import-Certificate -FilePath "cert.cer" -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
           Add-Content -Path $env:GITHUB_ENV -Value "PFX_FILE=cert.pfx"
           Add-Content -Path $env:GITHUB_ENV -Value "PFX_PASSWORD=$pass"
 
