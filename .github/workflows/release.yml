@@ -35,8 +35,14 @@ jobs:
           node-version: 18
           cache: "pnpm"
 
-      - name: Enable Corepack
-        run: corepack enable
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 8
+          run_install: false
+
+      - name: Verify pnpm
+        run: pnpm -v
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
