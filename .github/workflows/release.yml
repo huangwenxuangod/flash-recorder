@@ -76,9 +76,11 @@ jobs:
           $pass = [guid]::NewGuid().ToString()
           $secure = ConvertTo-SecureString -String $pass -Force -AsPlainText
           Export-PfxCertificate -Cert $cert -FilePath "cert.pfx" -Password $secure | Out-Null
-          Export-Certificate -Cert $cert -FilePath "cert.cer" | Out-Null
-          Import-Certificate -FilePath "cert.cer" -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
-          Import-Certificate -FilePath "cert.cer" -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
+          Export-Certificate -Cert $cert -FilePath "cert.cer" -ErrorAction Stop | Out-Null
+          & certutil -user -addstore Root cert.cer | Out-Null
+          & certutil -user -addstore TrustedPublisher cert.cer | Out-Null
+          if (-not (Get-ChildItem Cert:\CurrentUser\Root | Where-Object { $_.Thumbprint -eq $cert.Thumbprint })) { throw "Root import failed" }
+          if (-not (Get-ChildItem Cert:\CurrentUser\TrustedPublisher | Where-Object { $_.Thumbprint -eq $cert.Thumbprint })) { throw "TrustedPublisher import failed" }
           Add-Content -Path $env:GITHUB_ENV -Value "PFX_FILE=cert.pfx"
           Add-Content -Path $env:GITHUB_ENV -Value "PFX_PASSWORD=$pass"
 
