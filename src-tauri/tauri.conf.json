@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Flash_Recorder",
+  "productName": "Flashrecoder",
   "version": "0.1.0",
-  "identifier": "com.flashrecorder.app",
+  "identifier": "com.flashrecoder.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Flash Recorder",
+        "title": "Flashrecoder",
         "width": 360,
         "height": 680
       }
@@ -21,7 +21,7 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["D:/recordings/**"]
+        "scope": ["D:/recordings/**", "D:/Recordings/**"]
       }
     }
   },
@@ -47,8 +47,8 @@
       },
       "wix": {
         "language": ["zh-CN"],
-        "fragmentPaths": ["windows/fragments/shortcuts.wxs", "windows/fragments/path_env.wxs"],
-        "componentRefs": ["AppDesktopShortcut", "AppStartMenuShortcut", "PathEnv"]
+        "fragmentPaths": ["windows/fragments/shortcuts.wxs"],
+        "componentRefs": ["AppDesktopShortcut", "AppStartMenuShortcut"]
       }
     }
   }

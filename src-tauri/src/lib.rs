@@ -181,6 +181,7 @@ struct ExportStatus {
     state: String,
     progress: f32,
     error: Option<String>,
+    output_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -261,6 +262,101 @@ fn preview_path(output_path: &str) -> PathBuf {
         parent.join("preview.mp4")
     } else {
         PathBuf::from("preview.mp4")
+    }
+}
+
+fn work_base_dir() -> PathBuf {
+    if let Ok(local) = env::var("LOCALAPPDATA") {
+        let mut p = PathBuf::from(local);
+        p.push("Flash_Recorder");
+        p.push("work");
+        return p;
+    }
+    if let Ok(home) = env::var("HOME") {
+        let mut p = PathBuf::from(home);
+        p.push(".flash_recorder");
+        p.push("work");
+        return p;
+    }
+    PathBuf::from("work")
+}
+
+fn user_videos_dir() -> PathBuf {
+    if let Ok(user) = env::var("USERPROFILE") {
+        return PathBuf::from(user).join("Videos");
+    }
+    PathBuf::from("Videos")
+}
+
+fn export_dir_with_fallback() -> PathBuf {
+    let preferred = PathBuf::from(r"D:\Recordings");
+    if fs::create_dir_all(&preferred).is_ok() {
+        return preferred;
+    }
+    let fallback = user_videos_dir().join("Flash_Recorder");
+    let _ = fs::create_dir_all(&fallback);
+    fallback
+}
+
+fn normalize_export_output_path(req: &ExportRequest) -> String {
+    let raw = PathBuf::from(&req.output_path);
+    if raw.is_absolute() && raw.parent().is_some() {
+        return raw.to_string_lossy().to_string();
+    }
+    let input = PathBuf::from(&req.input_path);
+    let session = input
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("export");
+    let name = format!("{session}.mp4");
+    export_dir_with_fallback()
+        .join(name)
+        .to_string_lossy()
+        .to_string()
+}
+
+fn copy_dir(src: &PathBuf, dst: &PathBuf) -> std::io::Result<()> {
+    if !dst.exists() {
+        fs::create_dir_all(dst)?;
+    }
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_dir(&from, &to)?;
+        } else if file_type.is_file() {
+            if let Some(parent) = to.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let _ = fs::copy(&from, &to);
+        }
+    }
+    Ok(())
+}
+
+fn maybe_migrate_old_recordings() {
+    let candidates = [PathBuf::from(r"D:\recordings"), PathBuf::from(r"D:\Recordings")];
+    let target = work_base_dir();
+    let _ = fs::create_dir_all(&target);
+    for base in candidates {
+        if !base.exists() {
+            continue;
+        }
+        if let Ok(entries) = fs::read_dir(&base) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    let dst = target.join(entry.file_name());
+                    if fs::rename(&path, &dst).is_err() {
+                        let _ = copy_dir(&path, &dst);
+                        let _ = fs::remove_dir_all(&path);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -522,6 +618,7 @@ fn export_worker(app: tauri::AppHandle, state: Arc<Mutex<ExportManager>>) {
             state: "running".to_string(),
             progress: 0.0,
             error: None,
+            output_path: Some(job.request.output_path.clone()),
         };
         if let Ok(mut guard) = state.lock() {
             guard.statuses.insert(job.job_id.clone(), status.clone());
@@ -810,7 +907,7 @@ fn start_recording(
         .as_millis()
         .to_string();
 
-    let base_dir = PathBuf::from(r"D:\recordings");
+    let base_dir = work_base_dir();
     let output_dir = base_dir.join(&session_id);
     fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
     let log_error = |message: String| {
@@ -1388,7 +1485,10 @@ fn start_export(
         guard.statuses.insert(job_id.clone(), status.clone());
         guard.queue.push_back(ExportJob {
             job_id: job_id.clone(),
-            request,
+            request: ExportRequest {
+                output_path: normalize_export_output_path(&request),
+                ..request
+            },
         });
     }
     emit_export_status(&app, &status);
@@ -1421,6 +1521,7 @@ fn cancel_export(state: State<ExportState>, job_id: String) -> Result<(), String
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    maybe_migrate_old_recordings();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(

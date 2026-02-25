@@ -28,6 +28,7 @@ type ExportStatus = {
   state: string;
   progress: number;
   error?: string | null;
+  output_path?: string;
 };
 
 const aspectOptions: SelectOption[] = [
@@ -199,27 +200,21 @@ const EditPage = () => {
       setAvatarSrc("");
       return;
     }
-    setAvatarSrc(convertFileSrc(cameraPath));
+    setAvatarSrc("");
   }, [cameraPath]);
 
-  useEffect(() => {
-    if (!outputPath) {
-      return;
+  const SETTINGS_EXPORT_DIR = "settingsExportDir";
+  const joinPath = (dir: string, name: string) => {
+    if (dir.endsWith("\\") || dir.endsWith("/")) {
+      return `${dir}${name}`;
     }
-    setPreviewLoading(true);
-    setPreviewError("");
-    invoke<string>("ensure_preview", { outputPath })
-      .then((path) => {
-        setPreviewSrc(convertFileSrc(path));
-      })
-      .catch((error) => {
-        setPreviewSrc("");
-        setPreviewError(String(error));
-      })
-      .finally(() => {
-        setPreviewLoading(false);
-      });
-  }, [outputPath]);
+    const sep = dir.includes("\\") ? "\\" : "/";
+    return `${dir}${sep}${name}`;
+  };
+  const sessionIdFromInput = (input: string) => {
+    const parts = input.split(/[/\\]/);
+    return parts.length >= 2 ? parts[parts.length - 2] : "export";
+  };
 
   useEffect(() => {
     if (!outputPath || !hasLoadedRef.current) {
@@ -272,6 +267,10 @@ const EditPage = () => {
           exportToastIdRef.current = null;
         }
         toast.success("导出完成");
+        setPreviewError("");
+        const path = status.output_path || buildExportPath(outputPath);
+        setPreviewSrc(convertFileSrc(path));
+        setPreviewLoading(false);
       }
       if (status.state === "failed" && lastExportStateRef.current !== "failed") {
         if (exportToastIdRef.current) {
@@ -417,12 +416,9 @@ const EditPage = () => {
     exportStatus?.state === "running" || exportStatus?.state === "queued";
 
   const buildExportPath = (input: string) => {
-    const sep = input.includes("\\") ? "\\" : "/";
-    const index = input.lastIndexOf(sep);
-    if (index === -1) {
-      return "export.mp4";
-    }
-    return `${input.slice(0, index)}${sep}export.mp4`;
+    const dir = localStorage.getItem(SETTINGS_EXPORT_DIR) || "D:\\recordings";
+    const name = `Flashrecoder_${sessionIdFromInput(input)}.mp4`;
+    return joinPath(dir, name);
   };
 
   const profileForAspect = () => {

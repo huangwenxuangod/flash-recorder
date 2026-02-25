@@ -9,84 +9,12 @@
 !undef NSIS_HOOK_POSTINSTALL
 !endif
 !macro NSIS_HOOK_POSTINSTALL
-  StrCpy $0 "$INSTDIR"
-  StrCpy $1 "$PROGRAMFILES"
-  StrCpy $2 "$PROGRAMFILES64"
-  StrCpy $4 "HKCU"
-  StrLen $7 $1
-  StrLen $8 $2
-  StrCpy $9 $0 $7
-  StrCmp $9 $1 0 +3
-    StrCpy $4 "HKLM"
-    Goto +3
-  StrCpy $9 $0 $8
-  StrCmp $9 $2 0 +2
-    StrCpy $4 "HKLM"
-
-  StrCpy $5 ""
-  StrCpy $6 ""
-  ${If} "$4" == "HKLM"
-    ReadRegStr $5 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
-  ${Else}
-    ReadRegStr $5 HKCU "Environment" "Path"
-  ${EndIf}
-
-  StrCmp $5 "" 0 +2
-    StrCpy $5 "$INSTDIR"
-    Goto +2
-  StrCpy $6 "$5;$INSTDIR"
-  ${If} "$4" == "HKLM"
-    WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$6"
-  ${Else}
-    WriteRegExpandStr HKCU "Environment" "Path" "$6"
-  ${EndIf}
-  System::Call 'USER32::SendMessageTimeoutW(i 0xffff, i 0x1a, i 0, w "Environment", i 0x0002, i 5000, *i .r0)'
 !macroend
 
 !ifdef NSIS_HOOK_PREUNINSTALL
 !undef NSIS_HOOK_PREUNINSTALL
 !endif
 !macro NSIS_HOOK_PREUNINSTALL
-  StrCpy $0 "$INSTDIR"
-  StrCpy $1 "$PROGRAMFILES"
-  StrCpy $2 "$PROGRAMFILES64"
-  StrCpy $4 "HKCU"
-  StrLen $7 $1
-  StrLen $8 $2
-  StrCpy $9 $0 $7
-  StrCmp $9 $1 0 +3
-    StrCpy $4 "HKLM"
-    Goto +3
-  StrCpy $9 $0 $8
-  StrCmp $9 $2 0 +2
-    StrCpy $4 "HKLM"
-  ${If} "$4" == "HKLM"
-    ReadRegStr $5 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
-  ${Else}
-    ReadRegStr $5 HKCU "Environment" "Path"
-  ${EndIf}
-  StrCpy $6 "$5"
-  Push "$6"
-  Push ";$INSTDIR"
-  Push ";"
-  Call un.StrReplace
-  Pop $6
-  Push "$6"
-  Push "$INSTDIR;"
-  Push ";"
-  Call un.StrReplace
-  Pop $6
-  Push "$6"
-  Push "$INSTDIR"
-  Push ""
-  Call un.StrReplace
-  Pop $6
-  ${If} "$4" == "HKLM"
-    WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$6"
-  ${Else}
-    WriteRegExpandStr HKCU "Environment" "Path" "$6"
-  ${EndIf}
-  System::Call 'USER32::SendMessageTimeoutW(i 0xffff, i 0x1a, i 0, w "Environment", i 0x0002, i 5000, *i .r0)'
 !macroend
 
 !ifdef NSIS_HOOK_POSTUNINSTALL
