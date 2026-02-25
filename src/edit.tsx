@@ -7,6 +7,7 @@ import { FiCamera, FiUser, FiImage, FiMinus, FiPause, FiPlay, FiPlus, FiSliders,
 import { Toaster, toast } from "react-hot-toast";
 import "./App.css";
 import { SelectMenu, type SelectOption } from "./components/SelectMenu";
+import { Switch } from "@headlessui/react";
 
 const SETTINGS_EXPORT_DIR = "settingsExportDir";
 
@@ -788,6 +789,7 @@ const EditPage = () => {
                     ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
                     : "border-white/10 bg-slate-950/60 text-slate-400"
                 }`}
+                aria-label="相机设置"
               >
                 <FiCamera />
               </button>
@@ -802,6 +804,7 @@ const EditPage = () => {
                     ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
                     : "border-white/10 bg-slate-950/60 text-slate-400"
                 }`}
+                aria-label="背景设置"
               >
                 <FiImage />
               </button>
@@ -816,6 +819,7 @@ const EditPage = () => {
                     ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
                     : "border-white/10 bg-slate-950/60 text-slate-400"
                 }`}
+                aria-label="画框设置"
               >
                 <FiSliders />
               </button>
@@ -875,39 +879,27 @@ const EditPage = () => {
                   </div>
                   <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2">
                     <span>Mirror</span>
-                    <button
-                      type="button"
-                      onClick={() => setCameraMirror((prev) => !prev)}
+                    <Switch
+                      checked={cameraMirror}
+                      onChange={setCameraMirror}
                       className={`h-5 w-10 rounded-full border transition ${
-                        cameraMirror
-                          ? "border-cyan-400/60 bg-cyan-400/30"
-                          : "border-white/10 bg-slate-900/80"
+                        cameraMirror ? "border-cyan-400/60 bg-cyan-400/30" : "border-white/10 bg-slate-900/80"
                       }`}
                     >
-                      <span
-                        className={`block h-4 w-4 rounded-full bg-white transition ${
-                          cameraMirror ? "translate-x-5" : "translate-x-1"
-                        }`}
-                      />
-                    </button>
+                      <span className={`block h-4 w-4 rounded-full bg-white transition ${cameraMirror ? "translate-x-5" : "translate-x-1"}`} />
+                    </Switch>
                   </div>
                   <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2">
                     <span>Blur</span>
-                    <button
-                      type="button"
-                      onClick={() => setCameraBlur((prev) => !prev)}
+                    <Switch
+                      checked={cameraBlur}
+                      onChange={setCameraBlur}
                       className={`h-5 w-10 rounded-full border transition ${
-                        cameraBlur
-                          ? "border-cyan-400/60 bg-cyan-400/30"
-                          : "border-white/10 bg-slate-900/80"
+                        cameraBlur ? "border-cyan-400/60 bg-cyan-400/30" : "border-white/10 bg-slate-900/80"
                       }`}
                     >
-                      <span
-                        className={`block h-4 w-4 rounded-full bg-white transition ${
-                          cameraBlur ? "translate-x-5" : "translate-x-1"
-                        }`}
-                      />
-                    </button>
+                      <span className={`block h-4 w-4 rounded-full bg-white transition ${cameraBlur ? "translate-x-5" : "translate-x-1"}`} />
+                    </Switch>
                   </div>
                   <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2">
                     <span className="text-xs text-slate-400">相机位置</span>
@@ -1081,27 +1073,27 @@ const EditPage = () => {
                     </div>
                     <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2">
                       <span>Mirror</span>
-                      <button
-                        type="button"
-                        onClick={() => setCameraMirror((prev) => !prev)}
+                      <Switch
+                        checked={cameraMirror}
+                        onChange={setCameraMirror}
                         className={`h-5 w-10 rounded-full border transition ${
                           cameraMirror ? "border-cyan-400/60 bg-cyan-400/30" : "border-white/10 bg-slate-900/80"
                         }`}
                       >
                         <span className={`block h-4 w-4 rounded-full bg-white transition ${cameraMirror ? "translate-x-5" : "translate-x-1"}`} />
-                      </button>
+                      </Switch>
                     </div>
                     <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2">
                       <span>Blur</span>
-                      <button
-                        type="button"
-                        onClick={() => setCameraBlur((prev) => !prev)}
+                      <Switch
+                        checked={cameraBlur}
+                        onChange={setCameraBlur}
                         className={`h-5 w-10 rounded-full border transition ${
                           cameraBlur ? "border-cyan-400/60 bg-cyan-400/30" : "border-white/10 bg-slate-900/80"
                         }`}
                       >
                         <span className={`block h-4 w-4 rounded-full bg-white transition ${cameraBlur ? "translate-x-5" : "translate-x-1"}`} />
-                      </button>
+                      </Switch>
                     </div>
                     <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2">
                       <span className="text-xs text-slate-400">相机位置</span>

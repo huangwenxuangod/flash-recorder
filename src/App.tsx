@@ -7,6 +7,7 @@ import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { FiCamera, FiFolder, FiMic, FiMonitor, FiPlay, FiSettings, FiVideo } from "react-icons/fi";
 import "./App.css";
 import { SelectMenu, type SelectOption } from "./components/SelectMenu";
+import { Switch } from "@headlessui/react";
 
 type CaptureMode = "screen" | "window" | "region";
 
@@ -620,22 +621,15 @@ function MainApp() {
                       <div className="text-sm text-slate-100">开机自启动</div>
                       <div className="text-xs text-slate-500">开启后系统启动时自动运行</div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={toggleAutostart}
-                      disabled={autostartLoading}
+                    <Switch
+                      checked={settings.autostart}
+                      onChange={() => toggleAutostart()}
                       className={`relative h-7 w-12 rounded-full border transition ${
-                        settings.autostart
-                          ? "border-cyan-400/60 bg-cyan-400/30"
-                          : "border-white/10 bg-slate-900/70"
-                      }`}
+                        settings.autostart ? "border-cyan-400/60 bg-cyan-400/30" : "border-white/10 bg-slate-900/70"
+                      } ${autostartLoading ? "opacity-60 pointer-events-none" : ""}`}
                     >
-                      <span
-                        className={`absolute top-1 h-5 w-5 rounded-full bg-white transition ${
-                          settings.autostart ? "left-6" : "left-1"
-                        }`}
-                      />
-                    </button>
+                      <span className={`absolute top-1 h-5 w-5 rounded-full bg-white transition ${settings.autostart ? "left-6" : "left-1"}`} />
+                    </Switch>
                   </div>
                 </div>
 
