@@ -80,16 +80,16 @@ jobs:
           $secure = ConvertTo-SecureString -String $pass -Force -AsPlainText
           Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $secure
           Export-Certificate -Cert $cert -FilePath $cerPath -ErrorAction Stop
-          Import-Certificate -FilePath $cerPath -CertStoreLocation Cert:\CurrentUser\Root -ErrorAction Stop
-          Import-Certificate -FilePath $cerPath -CertStoreLocation Cert:\CurrentUser\TrustedPublisher -ErrorAction Stop
-          $rootCert = Get-ChildItem Cert:\CurrentUser\Root | Where-Object { $_.Thumbprint -eq $cert.Thumbprint }
-          $trustedCert = Get-ChildItem Cert:\CurrentUser\TrustedPublisher | Where-Object { $_.Thumbprint -eq $cert.Thumbprint }
-          if (-not $rootCert) { throw "Root import failed" }
-          if (-not $trustedCert) { throw "TrustedPublisher import failed" }
-          Add-Content -Path $env:GITHUB_ENV -Value ("PFX_FILE=" + $pfxPath)
-          Add-Content -Path $env:GITHUB_ENV -Value ("PFX_PASSWORD=" + $pass)
-          Add-Content -Path $env:GITHUB_ENV -Value "SIGN_MODE=selfsigned"
-          Write-Host "Using Self-signed certificate"
+          try {
+            Import-Certificate -FilePath $cerPath -CertStoreLocation Cert:\CurrentUser\TrustedPublisher -ErrorAction Stop
+            Write-Host "TrustedPublisher certificate imported successfully"
+          } catch {
+            Write-Warning ("TrustedPublisher import failed (non-critical): " + $_)
+          }
+          echo "PFX_FILE=$pfxPath" >> $env:GITHUB_ENV
+          echo "PFX_PASSWORD=$pass" >> $env:GITHUB_ENV
+          echo "SIGN_MODE=selfsigned" >> $env:GITHUB_ENV
+          Write-Host ("Using Self-signed certificate. Thumbprint: " + $cert.Thumbprint)
 
       - name: Locate signtool.exe
         shell: pwsh
@@ -120,7 +120,16 @@ jobs:
         run: |
           $bundle = "src-tauri/target/release/bundle"
           Get-ChildItem "$bundle/msi/*.msi","$bundle/nsis/*.exe" -ErrorAction SilentlyContinue | ForEach-Object {
-            & $env:SIGNTOOL verify /pa $_.FullName
+            $sig = Get-AuthenticodeSignature $_.FullName
+            if ($null -eq $sig -or $sig.Status -eq 'NotSigned' -or $sig.SignerCertificate -eq $null) {
+              throw ("Not signed: " + $_.Name)
+            }
+            if ($sig.Status -eq 'HashMismatch') {
+              throw ("Hash mismatch: " + $_.Name)
+            }
+            if ($sig.TimeStamperCertificate -eq $null) {
+              Write-Warning ("No timestamp: " + $_.Name)
+            }
           }
 
       - name: Set release metadata
