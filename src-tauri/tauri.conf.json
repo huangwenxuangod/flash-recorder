@@ -21,7 +21,10 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["D:/recordings/**", "D:/Recordings/**"]
+        "scope": [
+          "D:/recordings/**",
+          "C:/Users/*/AppData/Local/Flash_Recorder/work/**"
+        ]
       }
     }
   },

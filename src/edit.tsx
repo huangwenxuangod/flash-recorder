@@ -91,6 +91,24 @@ const EditPage = () => {
   }, []);
 
   useEffect(() => {
+    if (!outputPath) {
+      setPreviewSrc("");
+      return;
+    }
+    setPreviewLoading(true);
+    invoke<string>("ensure_preview", { outputPath })
+      .then((p) => {
+        setPreviewSrc(convertFileSrc(p));
+        setPreviewError("");
+      })
+      .catch(() => {
+        setPreviewSrc("");
+        setPreviewError("预览生成失败");
+      })
+      .finally(() => setPreviewLoading(false));
+  }, [outputPath]);
+
+  useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
       if (event.key === "recordingOutputPath") {
         setOutputPath(event.newValue ?? "");
@@ -200,7 +218,7 @@ const EditPage = () => {
       setAvatarSrc("");
       return;
     }
-    setAvatarSrc("");
+    setAvatarSrc(convertFileSrc(cameraPath));
   }, [cameraPath]);
 
   const SETTINGS_EXPORT_DIR = "settingsExportDir";

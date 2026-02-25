@@ -258,11 +258,13 @@ fn edit_state_path(output_path: &str) -> PathBuf {
 
 fn preview_path(output_path: &str) -> PathBuf {
     let path = PathBuf::from(output_path);
-    if let Some(parent) = path.parent() {
-        parent.join("preview.mp4")
-    } else {
-        PathBuf::from("preview.mp4")
-    }
+    let session = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("preview");
+    let name = format!("Flash Recorder_{}_preview.mp4", session);
+    export_dir_with_fallback().join(name)
 }
 
 fn work_base_dir() -> PathBuf {
@@ -289,7 +291,7 @@ fn user_videos_dir() -> PathBuf {
 }
 
 fn export_dir_with_fallback() -> PathBuf {
-    let preferred = PathBuf::from(r"D:\Recordings");
+    let preferred = PathBuf::from(r"D:\recordings");
     if fs::create_dir_all(&preferred).is_ok() {
         return preferred;
     }
