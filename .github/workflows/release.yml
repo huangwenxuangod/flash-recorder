@@ -69,20 +69,26 @@ jobs:
         run: pnpm run tauri build
 
       - name: Create self-signed certificate (Code Signing)
+        if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
         shell: pwsh
+        timeout-minutes: 3
         run: |
           $subject = "CN=Flash Recorder SelfSign"
-          $cert = New-SelfSignedCertificate -Type CodeSigning -Subject $subject -KeyExportPolicy Exportable -KeyLength 2048 -HashAlgorithm sha256 -CertStoreLocation Cert:\CurrentUser\My
+          $cert = New-SelfSignedCertificate -Type CodeSigning -Subject $subject -KeyExportPolicy Exportable -KeyLength 2048 -HashAlgorithm sha256 -KeyAlgorithm RSA -NotAfter (Get-Date).AddYears(3) -CertStoreLocation Cert:\CurrentUser\My
           $pass = [guid]::NewGuid().ToString()
           $secure = ConvertTo-SecureString -String $pass -Force -AsPlainText
-          Export-PfxCertificate -Cert $cert -FilePath "cert.pfx" -Password $secure | Out-Null
-          Export-Certificate -Cert $cert -FilePath "cert.cer" -ErrorAction Stop | Out-Null
-          & certutil -user -addstore Root cert.cer | Out-Null
-          & certutil -user -addstore TrustedPublisher cert.cer | Out-Null
-          if (-not (Get-ChildItem Cert:\CurrentUser\Root | Where-Object { $_.Thumbprint -eq $cert.Thumbprint })) { throw "Root import failed" }
-          if (-not (Get-ChildItem Cert:\CurrentUser\TrustedPublisher | Where-Object { $_.Thumbprint -eq $cert.Thumbprint })) { throw "TrustedPublisher import failed" }
-          Add-Content -Path $env:GITHUB_ENV -Value "PFX_FILE=cert.pfx"
-          Add-Content -Path $env:GITHUB_ENV -Value "PFX_PASSWORD=$pass"
+          $pfxPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "cert.pfx"
+          $cerPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "cert.cer"
+          Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $secure
+          Export-Certificate -Cert $cert -FilePath $cerPath -ErrorAction Stop
+          Import-Certificate -FilePath $cerPath -CertStoreLocation Cert:\CurrentUser\Root -ErrorAction Stop
+          Import-Certificate -FilePath $cerPath -CertStoreLocation Cert:\CurrentUser\TrustedPublisher -ErrorAction Stop
+          $rootCert = Get-ChildItem Cert:\CurrentUser\Root | Where-Object { $_.Thumbprint -eq $cert.Thumbprint }
+          $trustedCert = Get-ChildItem Cert:\CurrentUser\TrustedPublisher | Where-Object { $_.Thumbprint -eq $cert.Thumbprint }
+          if (-not $rootCert) { throw "Root import failed" }
+          if (-not $trustedCert) { throw "TrustedPublisher import failed" }
+          echo "PFX_FILE=$pfxPath" >> $env:GITHUB_ENV
+          echo "PFX_PASSWORD=$pass" >> $env:GITHUB_ENV
 
       - name: Locate signtool.exe
         shell: pwsh
