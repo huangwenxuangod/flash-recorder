@@ -37,9 +37,16 @@ fn ffmpeg_binary() -> String {
     }
     if let Ok(exe_path) = env::current_exe() {
         if let Some(dir) = exe_path.parent() {
-            let candidate = dir.join("resources").join("ffmpeg").join(if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" });
-            if candidate.exists() {
-                return candidate.to_string_lossy().to_string();
+            let bin_name = if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" };
+            let candidates = [
+                dir.join("resources").join("ffmpeg").join(&bin_name),
+                dir.join("ffmpeg").join(&bin_name),
+                dir.join(&bin_name),
+            ];
+            for candidate in candidates {
+                if candidate.exists() {
+                    return candidate.to_string_lossy().to_string();
+                }
             }
         }
     }
