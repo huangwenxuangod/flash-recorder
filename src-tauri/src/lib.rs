@@ -506,7 +506,7 @@ fn rounded_alpha_expr(radius: i32) -> String {
     )
 }
 
-fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_camera: bool) -> String {
+fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_camera: bool, zoom_override: Option<(String, String, String)>) -> String {
     let output_w = profile.width as i32;
     let output_h = profile.height as i32;
     let aspect = aspect_ratio(&edit_state.aspect);
@@ -536,10 +536,20 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     let target_h = evenize(((inner_h as f32) * shrink).round() as i32).max(2);
     let super_w = evenize((target_w * 2).max(2));
     let super_h = evenize((target_h * 2).max(2));
-    let base = format!(
-        "{bg_source}[bg];[0:v]scale={super_w}:{super_h}:force_original_aspect_ratio=decrease,format=rgba,zoompan=z='pzoom+0.001':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={target_w}x{target_h}:fps={fps}",
-        fps = profile.fps
-    );
+    let base = if let Some((z_expr, x_expr, y_expr)) = zoom_override.as_ref() {
+        format!(
+            "{bg_source}[bg];[0:v]scale={super_w}:{super_h}:force_original_aspect_ratio=decrease,format=rgba,zoompan=z='{z}':x='{x}':y='{y}':d=1:s={target_w}x{target_h}:fps={fps}",
+            z = z_expr,
+            x = x_expr,
+            y = y_expr,
+            fps = profile.fps
+        )
+    } else {
+        format!(
+            "{bg_source}[bg];[0:v]scale={super_w}:{super_h}:force_original_aspect_ratio=decrease,format=rgba,zoompan=z='1':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={target_w}x{target_h}:fps={fps}",
+            fps = profile.fps
+        )
+    };
     let rounded = if radius > 0 {
         let alpha_expr = rounded_alpha_expr(radius);
         format!("{base},geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{alpha_expr}'")
@@ -622,6 +632,119 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
             "{base};{camera_rounded}[cam];[base][cam]overlay=x={camera_x}:y={camera_y}:shortest=1[v]"
         )
     }
+}
+
+fn derive_zoom_override(input_path: &str) -> Option<(String, String, String)> {
+    let binding = PathBuf::from(input_path);
+    let dir = binding.parent()?;
+    let path = dir.join("zoom_track.json");
+    let data = fs::read_to_string(&path).ok()?;
+    let track: ZoomTrack = serde_json::from_str(&data).ok()?;
+    if track.frames.is_empty() {
+        return None;
+    }
+    let mut windows: Vec<(f64, f64)> = Vec::new();
+    let mut i = 0usize;
+    let n = track.frames.len();
+    while i < n {
+        while i < n && track.frames[i].zoom <= 1.0001 {
+            i += 1;
+        }
+        if i >= n {
+            break;
+        }
+        let s = (track.frames[i].time_ms as f64) / 1000.0;
+        let mut j = i;
+        while j < n && track.frames[j].zoom > 1.0001 {
+            j += 1;
+        }
+        let e = (track.frames[j.saturating_sub(1)].time_ms as f64) / 1000.0;
+        windows.push((s, e));
+        i = j;
+        if windows.len() > 100 {
+            break;
+        }
+    }
+    let mut z_expr = String::from("1");
+    for (s, e) in windows.iter() {
+        let ramp = 0.5f64;
+        let up = format!("(1+(2-1)*(1-pow(1-((time-{s})/{r})),3)))", s = s, r = ramp);
+        let flat = String::from("2");
+        let down = format!("(1+(2-1)*(1-pow(1-(({e}-time)/{r})),3)))", e = e, r = ramp);
+        let expr = format!(
+            "if(between(time,{s},{s_up}),{up},if(between(time,{s_up},{e_dn}),{flat},if(between(time,{e_dn},{e}),{down},{fallback})))",
+            s = s,
+            s_up = s + ramp,
+            e_dn = e - ramp,
+            e = e,
+            up = up,
+            flat = flat,
+            down = down,
+            fallback = z_expr
+        );
+        z_expr = expr;
+    }
+    let mut anchors: Vec<(f64, f64)> = Vec::new();
+    let mut t_prev = f64::MIN;
+    for f in track.frames.iter() {
+        let t = (f.time_ms as f64) / 1000.0;
+        if t - t_prev >= 0.12 {
+            anchors.push((t, f.axn as f64));
+            t_prev = t;
+        }
+        if anchors.len() > 150 {
+            break;
+        }
+    }
+    if anchors.is_empty() {
+        anchors.push((0.0, 0.5));
+        anchors.push((1.0, 0.5));
+    }
+    let mut ax_expr = anchors.last().unwrap().1.to_string();
+    for w in anchors.windows(2).rev() {
+        let (t0, a0) = w[0];
+        let (t1, a1) = w[1];
+        let lerp = format!(
+            "(({a0})*(1-((time-{t0})/({dt})))+({a1})*(((time-{t0})/({dt}))))",
+            a0 = a0,
+            a1 = a1,
+            t0 = t0,
+            dt = (t1 - t0).max(1e-6)
+        );
+        ax_expr = format!("if(between(time,{t0},{t1}),{lerp},{fallback})", t0 = t0, t1 = t1, lerp = lerp, fallback = ax_expr);
+    }
+    let mut ay_anchors: Vec<(f64, f64)> = Vec::new();
+    let mut ty_prev = f64::MIN;
+    for f in track.frames.iter() {
+        let t = (f.time_ms as f64) / 1000.0;
+        if t - ty_prev >= 0.12 {
+            ay_anchors.push((t, f.ayn as f64));
+            ty_prev = t;
+        }
+        if ay_anchors.len() > 150 {
+            break;
+        }
+    }
+    if ay_anchors.is_empty() {
+        ay_anchors.push((0.0, 0.5));
+        ay_anchors.push((1.0, 0.5));
+    }
+    let mut ay_expr = ay_anchors.last().unwrap().1.to_string();
+    for w in ay_anchors.windows(2).rev() {
+        let (t0, a0) = w[0];
+        let (t1, a1) = w[1];
+        let lerp = format!(
+            "(({a0})*(1-((time-{t0})/({dt})))+({a1})*(((time-{t0})/({dt}))))",
+            a0 = a0,
+            a1 = a1,
+            t0 = t0,
+            dt = (t1 - t0).max(1e-6)
+        );
+        ay_expr = format!("if(between(time,{t0},{t1}),{lerp},{fallback})", t0 = t0, t1 = t1, lerp = lerp, fallback = ay_expr);
+    }
+    let x_expr = format!("clip(({ax})*iw - (iw/({z}))/2, 0, iw - iw/({z}))", ax = ax_expr, z = z_expr);
+    let y_expr = format!("clip(({ay})*ih - (ih/({z}))/2, 0, ih - ih/({z}))", ay = ay_expr, z = z_expr);
+    Some((z_expr, x_expr, y_expr))
 }
 
 fn emit_export_status(app: &tauri::AppHandle, status: &ExportStatus) {
@@ -758,7 +881,8 @@ fn run_export_job(
     let has_camera = camera_path
         .map(|path| PathBuf::from(path).exists())
         .unwrap_or(false);
-    let filter = build_export_filter(&job.request.edit_state, &job.request.profile, has_camera);
+    let zoom_override = derive_zoom_override(&job.request.input_path);
+    let filter = build_export_filter(&job.request.edit_state, &job.request.profile, has_camera, zoom_override);
     let mut args = vec!["-y".to_string(), "-i".to_string(), job.request.input_path.clone()];
     if let Some(path) = camera_path {
         if has_camera {
@@ -1306,8 +1430,8 @@ fn start_recording(
                 let mut last_btn = false;
                 let mut last_axn = -1f32;
                 let mut last_ayn = -1f32;
-                let mut down_start_ms: Option<u64> = None;
-                let mut release_start_ms: Option<u64> = None;
+                let mut window_start_ms: Option<u64> = None;
+                let mut window_end_ms: Option<u64> = None;
                 loop {
                     if stop_flag_clone.load(Ordering::Relaxed) {
                         break;
@@ -1340,26 +1464,42 @@ fn start_recording(
                             let _ = writeln!(writer, "{line}");
                             wrote_move = true;
                         }
-                        down_start_ms = Some(offset_ms);
-                        release_start_ms = None;
+                        if let (Some(s), Some(e)) = (window_start_ms, window_end_ms) {
+                            if offset_ms <= e {
+                                // 5s 窗口内再次点击：仅延长窗口，不再重新缓入
+                                window_end_ms = Some(offset_ms.saturating_add(5000));
+                            } else {
+                                window_start_ms = Some(offset_ms);
+                                window_end_ms = Some(offset_ms.saturating_add(5000));
+                            }
+                        } else {
+                            window_start_ms = Some(offset_ms);
+                            window_end_ms = Some(offset_ms.saturating_add(5000));
+                        }
                     } else if !btn && last_btn {
                         let rec = CursorEventRecord { kind: "up".into(), offset_ms, axn, ayn };
                         if let Ok(line) = serde_json::to_string(&rec) {
                             let _ = writeln!(writer, "{line}");
                             wrote_move = true;
                         }
-                        release_start_ms = Some(offset_ms);
-                        down_start_ms = None;
+                        // 松开不立即结束窗口，仍保持到 window_end_ms 或下一次点击
                     }
                     let mut zoom: f32 = 1.0;
-                    if let Some(s) = down_start_ms {
+                    if let (Some(s), Some(e)) = (window_start_ms, window_end_ms) {
                         let ramp = 500u64;
-                        let u = (((offset_ms.saturating_sub(s)) as f64) / (ramp as f64)).clamp(0.0, 1.0);
-                        zoom = (1.0 + (2.0 - 1.0) * (1.0 - (1.0 - u).powi(3))) as f32;
-                    } else if let Some(s) = release_start_ms {
-                        let ramp = 500u64;
-                        let u = (((s.saturating_add(ramp).saturating_sub(offset_ms)) as f64) / (ramp as f64)).clamp(0.0, 1.0);
-                        zoom = (1.0 + (2.0 - 1.0) * (1.0 - (1.0 - u).powi(3))) as f32;
+                        if offset_ms < s.saturating_add(ramp) {
+                            let u = (((offset_ms.saturating_sub(s)) as f64) / (ramp as f64)).clamp(0.0, 1.0);
+                            zoom = (1.0 + (2.0 - 1.0) * (1.0 - (1.0 - u).powi(3))) as f32;
+                        } else if offset_ms <= e.saturating_sub(ramp) {
+                            zoom = 2.0;
+                        } else if offset_ms <= e {
+                            let u = (((e.saturating_sub(offset_ms)) as f64) / (ramp as f64)).clamp(0.0, 1.0);
+                            zoom = (1.0 + (2.0 - 1.0) * (1.0 - (1.0 - u).powi(3))) as f32;
+                        } else {
+                            zoom = 1.0;
+                            window_start_ms = None;
+                            window_end_ms = None;
+                        }
                     }
                     let _ = app_clone.emit(
                         "zoom_frame",
@@ -1766,16 +1906,22 @@ fn ensure_zoom_track(input_path: String) -> Result<String, String> {
         }
     }
     let mut windows: Vec<(f64, f64, Vec<(f64, f32, f32)>)> = Vec::new();
-    for (idx, &di) in downs.iter().enumerate() {
+    let mut wi = 0usize;
+    while wi < downs.len() {
+        let di = downs[wi];
         let start_rec = &events[di];
-        let s = (start_rec.offset_ms as f64) / 1000.0;
-        let next_s = downs
-            .get(idx + 1)
-            .map(|&dj| (events[dj].offset_ms as f64) / 1000.0)
-            .unwrap_or(f64::INFINITY);
+        let mut s = (start_rec.offset_ms as f64) / 1000.0;
         let mut e = s + 5.0;
-        if next_s.is_finite() {
-            e = e.min(next_s);
+        let mut wj = wi + 1;
+        // 合并 5s 窗口内的连续点击：仅延长窗口终点，不重启缓入
+        while wj < downs.len() {
+            let ds = (events[downs[wj]].offset_ms as f64) / 1000.0;
+            if ds <= e {
+                e = ds + 5.0;
+                wj += 1;
+            } else {
+                break;
+            }
         }
         let mut path_px = 0.0;
         let mut last_axn = start_rec.axn;
@@ -1798,7 +1944,6 @@ fn ensure_zoom_track(input_path: String) -> Result<String, String> {
                     follow_start_ms = Some(ev.offset_ms);
                     follow_start_axn = ev.axn;
                     follow_start_ayn = ev.ayn;
-                    break;
                 }
             }
         }
@@ -1825,7 +1970,8 @@ fn ensure_zoom_track(input_path: String) -> Result<String, String> {
         let last = anchors.last().cloned().unwrap_or(anchors[0]);
         anchors.push((e, last.1, last.2));
         windows.push((s, e, anchors));
-        if idx >= 100 {
+        wi = wj;
+        if windows.len() >= 100 {
             break;
         }
     }
@@ -1881,6 +2027,17 @@ fn ensure_zoom_track(input_path: String) -> Result<String, String> {
     let track = ZoomTrack { fps, frames };
     fs::write(&path, serde_json::to_string(&track).map_err(|_| "track_serialize_failed")?)
         .map_err(|_| "track_write_failed")?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn save_zoom_track(input_path: String, track_json: String) -> Result<String, String> {
+    let dir = PathBuf::from(&input_path)
+        .parent()
+        .ok_or("invalid_input_path")?
+        .to_path_buf();
+    let path = dir.join("zoom_track.json");
+    fs::write(&path, track_json).map_err(|_| "track_write_failed".to_string())?;
     Ok(path.to_string_lossy().to_string())
 }
 #[tauri::command]
@@ -1994,6 +2151,7 @@ pub fn run() {
             load_edit_state,
             ensure_preview,
             ensure_zoom_track,
+            save_zoom_track,
             get_export_dir,
             open_path,
             start_export,

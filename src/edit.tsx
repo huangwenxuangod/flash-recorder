@@ -3,7 +3,7 @@ import ReactDOM from "react-dom/client";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
-import { FiCamera, FiUser, FiImage, FiMinus, FiPause, FiPlay, FiPlus, FiSliders, FiFolder } from "react-icons/fi";
+import { FiCamera, FiUser, FiImage, FiPause, FiPlay, FiSliders, FiFolder } from "react-icons/fi";
 import { Toaster, toast } from "react-hot-toast";
 import "./App.css";
 import { SelectMenu, type SelectOption } from "./components/SelectMenu";
@@ -91,7 +91,6 @@ const EditPage = () => {
   const isScrubbingRef = useRef(false);
   const previewAreaRef = useRef<HTMLDivElement | null>(null);
   const [previewBaseHeight, setPreviewBaseHeight] = useState(236);
-  const [previewZoom, setPreviewZoom] = useState(1);
   const previewContentRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [avatarScale, setAvatarScale] = useState(1);
@@ -105,6 +104,28 @@ const EditPage = () => {
   const [cameraPosition, setCameraPosition] = useState<CameraPosition>("bottom_left");
   const [zoomTrack, setZoomTrack] = useState<ZoomTrack | null>(null);
   const realtimeFrameRef = useRef<ZoomFrame | null>(null);
+  const smoothAxnRef = useRef<number | null>(null);
+  const smoothAynRef = useRef<number | null>(null);
+  const zoomSegments = useMemo(() => {
+    const segs: Array<{ s: number; e: number }> = [];
+    if (zoomTrack && zoomTrack.frames.length) {
+      const frames = zoomTrack.frames;
+      let i = 0;
+      const n = frames.length;
+      while (i < n) {
+        while (i < n && frames[i].zoom <= 1.0001) i++;
+        if (i >= n) break;
+        const s = frames[i].time_ms / 1000;
+        let j = i;
+        while (j < n && frames[j].zoom > 1.0001) j++;
+        const e = frames[Math.max(i, j - 1)].time_ms / 1000;
+        segs.push({ s, e });
+        i = j;
+        if (segs.length > 100) break;
+      }
+    }
+    return segs;
+  }, [zoomTrack]);
 
   useEffect(() => {
     setOutputPath(localStorage.getItem("recordingOutputPath") ?? "");
@@ -251,6 +272,8 @@ const EditPage = () => {
     };
     const handleSeeked = () => {
       syncAvatarToPreview(video.currentTime || 0);
+      smoothAxnRef.current = null;
+      smoothAynRef.current = null;
     };
     video.addEventListener("loadedmetadata", handleLoaded);
     video.addEventListener("durationchange", handleDuration);
@@ -705,10 +728,26 @@ const EditPage = () => {
       return;
     }
     const z = Math.max(1, Math.min(4, frame.zoom || 1));
+    const maxStep = 0.06;
+    const prevAxn = smoothAxnRef.current ?? frame.axn;
+    const prevAyn = smoothAynRef.current ?? frame.ayn;
+    const dxn = frame.axn - prevAxn;
+    const dyn = frame.ayn - prevAyn;
+    const len = Math.hypot(dxn, dyn);
+    if (len > maxStep) {
+      const s = maxStep / (len || 1);
+      smoothAxnRef.current = prevAxn + dxn * s;
+      smoothAynRef.current = prevAyn + dyn * s;
+    } else {
+      smoothAxnRef.current = frame.axn;
+      smoothAynRef.current = frame.ayn;
+    }
+    const axn2 = smoothAxnRef.current ?? frame.axn;
+    const ayn2 = smoothAynRef.current ?? frame.ayn;
     const sw = Math.round(vw / z);
     const sh = Math.round(vh / z);
-    const px = Math.round(Math.min(Math.max(frame.axn * vw - sw / 2, 0), vw - sw));
-    const py = Math.round(Math.min(Math.max(frame.ayn * vh - sh / 2, 0), vh - sh));
+    const px = Math.round(Math.min(Math.max(axn2 * vw - sw / 2, 0), vw - sw));
+    const py = Math.round(Math.min(Math.max(ayn2 * vh - sh / 2, 0), vh - sh));
     ctx.drawImage(video, px, py, sw, sh, destX, destY, dx, dy);
   };
   useEffect(() => {
@@ -789,11 +828,9 @@ const EditPage = () => {
                     onClick={() => {
                       const container = previewContentRef.current;
                       if (!container) return;
-                      setPreviewZoom(1);
                       setAvatarScale(0.7);
                     }}
                     onDoubleClick={() => {
-                      setPreviewZoom(1);
                       setAvatarScale(1);
                       if (zoomTimerRef.current) {
                         window.clearTimeout(zoomTimerRef.current);
@@ -907,39 +944,7 @@ const EditPage = () => {
               </button>
             </div>
 
-            <div
-              className="flex w-full items-center gap-2 rounded-xl border border-white/5 bg-slate-900/50 px-2 py-1.5"
-              style={{ marginTop: 48 }}
-            >
-              <button
-                type="button"
-                onClick={() => setPreviewZoom((value) => Math.max(1, Number((value - 0.1).toFixed(2))))}
-                className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-slate-950/70 text-slate-200 transition hover:border-cyan-400/40"
-                aria-label="缩小"
-              >
-                <FiMinus className="h-3.5 w-3.5" />
-              </button>
-              <input
-                type="range"
-                min={1}
-                max={3}
-                step={0.05}
-                value={previewZoom}
-                onChange={(event) => setPreviewZoom(Number(event.target.value))}
-                className="h-1.5 flex-1 cursor-pointer accent-cyan-400"
-              />
-              <button
-                type="button"
-                onClick={() => setPreviewZoom((value) => Math.min(3, Number((value + 0.1).toFixed(2))))}
-                className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-slate-950/70 text-slate-200 transition hover:border-cyan-400/40"
-                aria-label="放大"
-              >
-                <FiPlus className="h-3.5 w-3.5" />
-              </button>
-              <div className="w-10 text-right text-[10px] text-slate-400">
-                {(previewZoom * 100).toFixed(0)}%
-              </div>
-            </div>
+ 
             <div className="flex w-full items-center px-3 py-1.5">
               <input
                 type="range"
@@ -953,8 +958,46 @@ const EditPage = () => {
                 onPointerCancel={endScrub}
                 disabled={previewControlsDisabled}
                 className="h-1.5 w-full cursor-pointer accent-cyan-400"
+                style={{ marginTop: 28 }}
               />
             </div>
+            {previewDuration > 0 ? (
+              <div className="w-full px-3 py-2">
+                <div className="relative w-full rounded-xl border border-white/10 bg-slate-950/60">
+                  <div className="relative h-9 w-full">
+                    {Array.from({ length: Math.ceil(previewDuration) + 1 }).map((_, i) => (
+                      <div
+                        key={`tick-${i}`}
+                        className="absolute top-0 h-full w-px bg-white/10"
+                        style={{ left: `${(i / Math.max(previewDuration, 0.001)) * 100}%` }}
+                      />
+                    ))}
+                    <div className="absolute left-2 top-1/2 -translate-y-1/2 rounded-md bg-blue-600/80 px-2 py-1 text-[10px] text-white">
+                      Clip
+                    </div>
+                    <div className="absolute left-8 right-2 top-1/2 h-4 -translate-y-1/2 rounded-md bg-blue-500/40" />
+                  </div>
+                  <div className="relative h-9 w-full mt-1">
+                    <div className="absolute left-2 top-1/2 -translate-y-1/2 rounded-md bg-pink-600/80 px-2 py-1 text-[10px] text-white">
+                      Zoom
+                    </div>
+                    <div className="absolute left-8 right-2 top-1/2 h-4 -translate-y-1/2 rounded-md bg-pink-500/20" />
+                    {zoomSegments.map((seg, idx) => {
+                      const left = Math.min(100, Math.max(0, (seg.s / previewDuration) * 100));
+                      const right = Math.min(100, Math.max(0, (seg.e / previewDuration) * 100));
+                      const width = Math.max(0, right - left);
+                      return (
+                        <div
+                          key={`zoom-seg-${idx}`}
+                          className="absolute top-1/2 h-4 -translate-y-1/2 rounded-md bg-pink-500/70"
+                          style={{ left: `${left}%`, width: `${width}%` }}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            ) : null}
             <Toaster position="top-center" toastOptions={{ duration: 1600 }} />
           </section>
 
