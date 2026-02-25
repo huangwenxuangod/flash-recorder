@@ -12,6 +12,17 @@ import { motion } from "framer-motion";
 
 const SETTINGS_EXPORT_DIR = "settingsExportDir";
 
+type ZoomFrame = {
+  time_ms: number;
+  axn: number;
+  ayn: number;
+  zoom: number;
+};
+type ZoomTrack = {
+  fps: number;
+  frames: ZoomFrame[];
+};
+
 type EditState = {
   aspect: string;
   padding: number;
@@ -82,7 +93,7 @@ const EditPage = () => {
   const [previewBaseHeight, setPreviewBaseHeight] = useState(236);
   const [previewZoom, setPreviewZoom] = useState(1);
   const previewContentRef = useRef<HTMLDivElement | null>(null);
-  const [zoomPan, setZoomPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [avatarScale, setAvatarScale] = useState(1);
   const zoomTimerRef = useRef<number | null>(null);
   const lastExportStateRef = useRef<string | null>(null);
@@ -92,6 +103,8 @@ const EditPage = () => {
   const [isMobile, setIsMobile] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [cameraPosition, setCameraPosition] = useState<CameraPosition>("bottom_left");
+  const [zoomTrack, setZoomTrack] = useState<ZoomTrack | null>(null);
+  const realtimeFrameRef = useRef<ZoomFrame | null>(null);
 
   useEffect(() => {
     setOutputPath(localStorage.getItem("recordingOutputPath") ?? "");
@@ -117,6 +130,28 @@ const EditPage = () => {
   }, [outputPath]);
 
   useEffect(() => {
+    if (!previewSrc || !outputPath) return;
+    invoke<string>("ensure_zoom_track", { inputPath: outputPath })
+      .then(async (trackPath) => {
+        const url = convertFileSrc(trackPath);
+        const res = await fetch(url);
+        const data = await res.json();
+        setZoomTrack(data as ZoomTrack);
+      })
+      .catch(() => null);
+  }, [previewSrc, outputPath]);
+
+  useEffect(() => {
+    const unlistenPromise = listen<ZoomFrame>("zoom_frame", (ev) => {
+      const f = ev.payload;
+      realtimeFrameRef.current = f;
+    });
+    return () => {
+      unlistenPromise.then((u) => u()).catch(() => null);
+    };
+  }, []);
+
+  useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
       if (event.key === "recordingOutputPath") {
         setOutputPath(event.newValue ?? "");
@@ -128,6 +163,21 @@ const EditPage = () => {
     window.addEventListener("storage", handleStorage);
     return () => window.removeEventListener("storage", handleStorage);
   }, []);
+
+  useEffect(() => {
+    if (!outputPath) {
+      setZoomTrack(null);
+      return;
+    }
+    invoke<string>("ensure_zoom_track", { inputPath: outputPath })
+      .then(async (trackPath) => {
+        const url = convertFileSrc(trackPath);
+        const res = await fetch(url);
+        const data = await res.json();
+        setZoomTrack(data as ZoomTrack);
+      })
+      .catch(() => setZoomTrack(null));
+  }, [outputPath]);
 
   useEffect(() => {
     if (!outputPath) {
@@ -412,6 +462,7 @@ const EditPage = () => {
   const evenize = (n: number) => (n % 2 === 0 ? n : n - 1);
   const previewFrameHeight = evenize(previewBaseHeight);
   const previewFrameWidth = evenize(Math.round(previewFrameHeight * previewAspect));
+  const shrink = editAspect === "9:16" ? 0.92 : 1.0;
   const exportDisabled =
     !outputPath || exportStatus?.state === "running" || exportStatus?.state === "queued";
   const cameraRadius =
@@ -590,15 +641,111 @@ const EditPage = () => {
       avatarVideoRef.current?.play().catch(() => null);
     }
   };
+  const rafRef = useRef<number | null>(null);
+  const sampleZoom = (tMs: number): ZoomFrame | null => {
+    const track = zoomTrack;
+    if (!track || !track.frames.length) return null;
+    const frames = track.frames;
+    let i = 0;
+    let j = frames.length - 1;
+    while (i < j) {
+      const m = ((i + j) >> 1) as number;
+      if (frames[m].time_ms < tMs) i = m + 1;
+      else j = m;
+    }
+    const idx = i;
+    const f1 = frames[idx];
+    const f0 = frames[Math.max(0, idx - 1)];
+    if (f0.time_ms === f1.time_ms) return f1;
+    const u = Math.min(1, Math.max(0, (tMs - f0.time_ms) / (f1.time_ms - f0.time_ms)));
+    return {
+      time_ms: tMs,
+      axn: f0.axn * (1 - u) + f1.axn * u,
+      ayn: f0.ayn * (1 - u) + f1.ayn * u,
+      zoom: f0.zoom * (1 - u) + f1.zoom * u,
+    };
+  };
+  const drawCanvas = () => {
+    const video = previewVideoRef.current;
+    const canvas = canvasRef.current;
+    const container = previewContentRef.current;
+    if (!video || !canvas || !container) return;
+    const rect = container.getBoundingClientRect();
+    const cw = Math.max(2, Math.round(rect.width));
+    const ch = Math.max(2, Math.round(rect.height));
+    if (canvas.width !== cw || canvas.height !== ch) {
+      canvas.width = cw;
+      canvas.height = ch;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.imageSmoothingEnabled = true;
+    ctx.clearRect(0, 0, cw, ch);
+    const vw = Math.max(1, video.videoWidth || 0);
+    const vh = Math.max(1, video.videoHeight || 0);
+    if (!vw || !vh || !Number.isFinite(video.currentTime)) return;
+    const tMs = Math.round((video.currentTime || 0) * 1000);
+    let frame = sampleZoom(tMs);
+    const rt = realtimeFrameRef.current;
+    if (rt && Math.abs(rt.time_ms - tMs) <= 200) {
+      frame = rt;
+    }
+    const dx = Math.round(cw * shrink);
+    const dy = Math.round(ch * shrink);
+    const destX = Math.round((cw - dx) / 2);
+    const destY = Math.round((ch - dy) / 2);
+    if (!frame) {
+      const va = vw / vh;
+      const ra = dx / dy;
+      const dw = ra > va ? Math.round(dy * va) : dx;
+      const dh = ra > va ? dy : Math.round(dx / va);
+      const offX = destX + Math.round((dx - dw) / 2);
+      const offY = destY + Math.round((dy - dh) / 2);
+      ctx.drawImage(video, 0, 0, vw, vh, offX, offY, dw, dh);
+      return;
+    }
+    const z = Math.max(1, Math.min(4, frame.zoom || 1));
+    const sw = Math.round(vw / z);
+    const sh = Math.round(vh / z);
+    const px = Math.round(Math.min(Math.max(frame.axn * vw - sw / 2, 0), vw - sw));
+    const py = Math.round(Math.min(Math.max(frame.ayn * vh - sh / 2, 0), vh - sh));
+    ctx.drawImage(video, px, py, sw, sh, destX, destY, dx, dy);
+  };
+  useEffect(() => {
+    if (previewPlaying) {
+      const tick = () => {
+        drawCanvas();
+        rafRef.current = window.requestAnimationFrame(tick);
+      };
+      rafRef.current = window.requestAnimationFrame(tick);
+      return () => {
+        if (rafRef.current) {
+          window.cancelAnimationFrame(rafRef.current);
+          rafRef.current = null;
+        }
+      };
+    } else {
+      drawCanvas();
+      if (rafRef.current) {
+        window.cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    }
+  }, [previewPlaying, zoomTrack, shrink, previewFrameWidth, previewFrameHeight]);
+  useEffect(() => {
+    drawCanvas();
+  }, [previewTime, zoomTrack, shrink, previewFrameWidth, previewFrameHeight]);
   const previewSurface = previewSrc ? (
-    <video
-      ref={previewVideoRef}
-      className="h-full w-full object-contain"
-      src={previewSrc}
-      muted
-      playsInline
-      style={{ background: "transparent" }}
-    />
+    <>
+      <video
+        ref={previewVideoRef}
+        className="h-0 w-0 absolute opacity-0 pointer-events-none"
+        src={previewSrc}
+        muted
+        playsInline
+      />
+      <canvas ref={canvasRef} className="h-full w-full" />
+    </>
   ) : (
     <div className="flex h-full items-center justify-center text-[11px] text-slate-400">
       {previewLabel || "暂无预览"}
@@ -639,46 +786,14 @@ const EditPage = () => {
                   <div
                     className="relative h-full w-full overflow-hidden rounded-2xl"
                     ref={previewContentRef}
-                    onClick={(event) => {
+                    onClick={() => {
                       const container = previewContentRef.current;
-                      const video = previewVideoRef.current;
-                      if (!container || !video) {
-                        return;
-                      }
-                      const rect = container.getBoundingClientRect();
-                      const cx = event.clientX - rect.left;
-                      const cy = event.clientY - rect.top;
-                      const vw = Math.max(video.videoWidth || 0, 1);
-                      const vh = Math.max(video.videoHeight || 0, 1);
-                      const va = vw / vh;
-                      const ra = rect.width / rect.height;
-                      const displayW = ra > va ? rect.height * va : rect.width;
-                      const displayH = ra > va ? rect.height : rect.width / va;
-                      const offsetX = (rect.width - displayW) / 2;
-                      const offsetY = (rect.height - displayH) / 2;
-                      const ax = Math.min(Math.max(cx - offsetX, 0), displayW);
-                      const ay = Math.min(Math.max(cy - offsetY, 0), displayH);
-                      const Z = 2;
-                      const px = offsetX + ax - rect.width / (2 * Z);
-                      const py = offsetY + ay - rect.height / (2 * Z);
-                      const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
-                      const maxPx = rect.width - rect.width / Z;
-                      const maxPy = rect.height - rect.height / Z;
-                      setPreviewZoom(Z);
-                      setZoomPan({ x: clamp(px, 0, maxPx), y: clamp(py, 0, maxPy) });
+                      if (!container) return;
+                      setPreviewZoom(1);
                       setAvatarScale(0.7);
-                      if (zoomTimerRef.current) {
-                        window.clearTimeout(zoomTimerRef.current);
-                      }
-                      zoomTimerRef.current = window.setTimeout(() => {
-                        setPreviewZoom(1);
-                        setZoomPan({ x: 0, y: 0 });
-                        setAvatarScale(1);
-                      }, 5000);
                     }}
                     onDoubleClick={() => {
                       setPreviewZoom(1);
-                      setZoomPan({ x: 0, y: 0 });
                       setAvatarScale(1);
                       if (zoomTimerRef.current) {
                         window.clearTimeout(zoomTimerRef.current);
@@ -689,8 +804,8 @@ const EditPage = () => {
                     <motion.div
                       className="h-full w-full"
                       style={{ transformOrigin: "top left", willChange: "transform" }}
-                      animate={{ x: -zoomPan.x, y: -zoomPan.y, scale: previewZoom }}
-                      transition={{ duration: 0.5, ease: [0.215, 0.61, 0.355, 1] }}
+                      animate={{ x: 0, y: 0, scale: 1 }}
+                      transition={{ duration: 0.01 }}
                     >
                       {previewSurface}
                     </motion.div>

@@ -262,7 +262,7 @@ struct CursorEventRecord {
     ayn: f32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct ZoomFrame {
     time_ms: u64,
     axn: f32,
@@ -997,7 +997,7 @@ fn exclude_window_from_capture(app: tauri::AppHandle, label: String) -> Result<(
 
 #[tauri::command]
 fn start_recording(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     state: State<RecordingState>,
     preview_state: State<PreviewState>,
     request: StartRecordingRequest,
@@ -1290,6 +1290,7 @@ fn start_recording(
         let stop_flag_clone = stop_flag.clone();
         let cursor_path_clone = cursor_path.clone();
         let rect_clone = rect.clone();
+        let app_clone = app.clone();
         thread::spawn(move || {
             #[cfg(target_os = "windows")]
             {
@@ -1305,6 +1306,8 @@ fn start_recording(
                 let mut last_btn = false;
                 let mut last_axn = -1f32;
                 let mut last_ayn = -1f32;
+                let mut down_start_ms: Option<u64> = None;
+                let mut release_start_ms: Option<u64> = None;
                 loop {
                     if stop_flag_clone.load(Ordering::Relaxed) {
                         break;
@@ -1337,13 +1340,36 @@ fn start_recording(
                             let _ = writeln!(writer, "{line}");
                             wrote_move = true;
                         }
+                        down_start_ms = Some(offset_ms);
+                        release_start_ms = None;
                     } else if !btn && last_btn {
                         let rec = CursorEventRecord { kind: "up".into(), offset_ms, axn, ayn };
                         if let Ok(line) = serde_json::to_string(&rec) {
                             let _ = writeln!(writer, "{line}");
                             wrote_move = true;
                         }
+                        release_start_ms = Some(offset_ms);
+                        down_start_ms = None;
                     }
+                    let mut zoom: f32 = 1.0;
+                    if let Some(s) = down_start_ms {
+                        let ramp = 500u64;
+                        let u = (((offset_ms.saturating_sub(s)) as f64) / (ramp as f64)).clamp(0.0, 1.0);
+                        zoom = (1.0 + (2.0 - 1.0) * (1.0 - (1.0 - u).powi(3))) as f32;
+                    } else if let Some(s) = release_start_ms {
+                        let ramp = 500u64;
+                        let u = (((s.saturating_add(ramp).saturating_sub(offset_ms)) as f64) / (ramp as f64)).clamp(0.0, 1.0);
+                        zoom = (1.0 + (2.0 - 1.0) * (1.0 - (1.0 - u).powi(3))) as f32;
+                    }
+                    let _ = app_clone.emit(
+                        "zoom_frame",
+                        ZoomFrame {
+                            time_ms: offset_ms,
+                            axn,
+                            ayn,
+                            zoom,
+                        },
+                    );
                     last_btn = btn;
                     if !wrote_move {
                         thread::sleep(Duration::from_millis(30));
@@ -1682,22 +1708,27 @@ fn ensure_zoom_track(input_path: String) -> Result<String, String> {
     }
     let meta_path = dir.join("capture.json");
     let cursor_path = {
-        let mut found: Option<PathBuf> = None;
-        if let Ok(entries) = fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|n| n.ends_with(".cursor.jsonl"))
-                    .unwrap_or(false)
-                {
-                    found = Some(p);
-                    break;
+        let direct = dir.join("cursor.jsonl");
+        if direct.exists() {
+            direct
+        } else {
+            let mut found: Option<PathBuf> = None;
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.ends_with("cursor.jsonl"))
+                        .unwrap_or(false)
+                    {
+                        found = Some(p);
+                        break;
+                    }
                 }
             }
+            found.ok_or("cursor_events_missing")?
         }
-        found.ok_or("cursor_events_missing")?
     };
     let capture_meta: CaptureMeta = serde_json::from_str(
         &fs::read_to_string(&meta_path).map_err(|_| "capture_meta_missing")?,
