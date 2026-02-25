@@ -80,6 +80,10 @@ const EditPage = () => {
   const previewAreaRef = useRef<HTMLDivElement | null>(null);
   const [previewBaseHeight, setPreviewBaseHeight] = useState(236);
   const [previewZoom, setPreviewZoom] = useState(1);
+  const previewContentRef = useRef<HTMLDivElement | null>(null);
+  const [zoomPan, setZoomPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [avatarScale, setAvatarScale] = useState(1);
+  const zoomTimerRef = useRef<number | null>(null);
   const lastExportStateRef = useRef<string | null>(null);
   const exportToastIdRef = useRef<string | null>(null);
   const sectionRef = useRef<HTMLDivElement | null>(null);
@@ -631,7 +635,67 @@ const EditPage = () => {
                     boxShadow: `0 16px 40px rgba(0,0,0,${editShadow / 100})`,
                   }}
                 >
-                  <div className="relative h-full w-full overflow-hidden rounded-2xl">{previewSurface}</div>
+                  <div
+                    className="relative h-full w-full overflow-hidden rounded-2xl"
+                    ref={previewContentRef}
+                    onClick={(event) => {
+                      const container = previewContentRef.current;
+                      const video = previewVideoRef.current;
+                      if (!container || !video) {
+                        return;
+                      }
+                      const rect = container.getBoundingClientRect();
+                      const cx = event.clientX - rect.left;
+                      const cy = event.clientY - rect.top;
+                      const vw = Math.max(video.videoWidth || 0, 1);
+                      const vh = Math.max(video.videoHeight || 0, 1);
+                      const va = vw / vh;
+                      const ra = rect.width / rect.height;
+                      const displayW = ra > va ? rect.height * va : rect.width;
+                      const displayH = ra > va ? rect.height : rect.width / va;
+                      const offsetX = (rect.width - displayW) / 2;
+                      const offsetY = (rect.height - displayH) / 2;
+                      const ax = Math.min(Math.max(cx - offsetX, 0), displayW);
+                      const ay = Math.min(Math.max(cy - offsetY, 0), displayH);
+                      const Z = 2;
+                      const px = offsetX + ax - rect.width / (2 * Z);
+                      const py = offsetY + ay - rect.height / (2 * Z);
+                      const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+                      const maxPx = rect.width - rect.width / Z;
+                      const maxPy = rect.height - rect.height / Z;
+                      setPreviewZoom(Z);
+                      setZoomPan({ x: clamp(px, 0, maxPx), y: clamp(py, 0, maxPy) });
+                      setAvatarScale(0.7);
+                      if (zoomTimerRef.current) {
+                        window.clearTimeout(zoomTimerRef.current);
+                      }
+                      zoomTimerRef.current = window.setTimeout(() => {
+                        setPreviewZoom(1);
+                        setZoomPan({ x: 0, y: 0 });
+                        setAvatarScale(1);
+                      }, 3000);
+                    }}
+                    onDoubleClick={() => {
+                      setPreviewZoom(1);
+                      setZoomPan({ x: 0, y: 0 });
+                      setAvatarScale(1);
+                      if (zoomTimerRef.current) {
+                        window.clearTimeout(zoomTimerRef.current);
+                        zoomTimerRef.current = null;
+                      }
+                    }}
+                  >
+                    <div
+                      className="h-full w-full"
+                      style={{
+                        transform: `translate(${-zoomPan.x}px, ${-zoomPan.y}px) scale(${previewZoom})`,
+                        transformOrigin: "top left",
+                        willChange: "transform",
+                      }}
+                    >
+                      {previewSurface}
+                    </div>
+                  </div>
                 </div>
                 <div
                   className="absolute overflow-hidden"
@@ -640,7 +704,8 @@ const EditPage = () => {
                     height: evenize(cameraSize),
                     borderRadius: cameraRadius,
                     boxShadow: `0 16px 40px rgba(0,0,0,${cameraShadow / 120}), 0 0 0 1px rgba(255,255,255,0.1), inset 0 1px 0 rgba(255,255,255,0.25)`,
-                    transform: cameraMirror ? "scaleX(-1)" : "none",
+                    transform: cameraMirror ? `scaleX(-1) scale(${avatarScale})` : `scale(${avatarScale})`,
+                    transformOrigin: "center",
                     background: cameraBlur ? "rgba(15, 23, 42, 0.25)" : "rgba(15, 23, 42, 0.18)",
                     backdropFilter: cameraBlur ? "blur(18px) saturate(140%)" : "blur(10px)",
                     ...(cameraPosition === "top_left"
