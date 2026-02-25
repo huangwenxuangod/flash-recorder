@@ -673,7 +673,7 @@ const EditPage = () => {
                         setPreviewZoom(1);
                         setZoomPan({ x: 0, y: 0 });
                         setAvatarScale(1);
-                      }, 3000);
+                      }, 5000);
                     }}
                     onDoubleClick={() => {
                       setPreviewZoom(1);
@@ -690,6 +690,7 @@ const EditPage = () => {
                       style={{
                         transform: `translate(${-zoomPan.x}px, ${-zoomPan.y}px) scale(${previewZoom})`,
                         transformOrigin: "top left",
+                        transition: "transform 500ms cubic-bezier(0.215, 0.61, 0.355, 1)",
                         willChange: "transform",
                       }}
                     >
@@ -705,7 +706,15 @@ const EditPage = () => {
                     borderRadius: cameraRadius,
                     boxShadow: `0 16px 40px rgba(0,0,0,${cameraShadow / 120}), 0 0 0 1px rgba(255,255,255,0.1), inset 0 1px 0 rgba(255,255,255,0.25)`,
                     transform: cameraMirror ? `scaleX(-1) scale(${avatarScale})` : `scale(${avatarScale})`,
-                    transformOrigin: "center",
+                    transformOrigin:
+                      cameraPosition === "top_left"
+                        ? "top left"
+                        : cameraPosition === "top_right"
+                        ? "top right"
+                        : cameraPosition === "bottom_right"
+                        ? "bottom right"
+                        : "bottom left",
+                    transition: "transform 500ms cubic-bezier(0.215, 0.61, 0.355, 1)",
                     background: cameraBlur ? "rgba(15, 23, 42, 0.25)" : "rgba(15, 23, 42, 0.18)",
                     backdropFilter: cameraBlur ? "blur(18px) saturate(140%)" : "blur(10px)",
                     ...(cameraPosition === "top_left"
