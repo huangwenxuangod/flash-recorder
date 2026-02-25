@@ -8,6 +8,7 @@ import { Toaster, toast } from "react-hot-toast";
 import "./App.css";
 import { SelectMenu, type SelectOption } from "./components/SelectMenu";
 import { Switch } from "@headlessui/react";
+import { motion } from "framer-motion";
 
 const SETTINGS_EXPORT_DIR = "settingsExportDir";
 
@@ -685,27 +686,23 @@ const EditPage = () => {
                       }
                     }}
                   >
-                    <div
+                    <motion.div
                       className="h-full w-full"
-                      style={{
-                        transform: `translate(${-zoomPan.x}px, ${-zoomPan.y}px) scale(${previewZoom})`,
-                        transformOrigin: "top left",
-                        transition: "transform 500ms cubic-bezier(0.215, 0.61, 0.355, 1)",
-                        willChange: "transform",
-                      }}
+                      style={{ transformOrigin: "top left", willChange: "transform" }}
+                      animate={{ x: -zoomPan.x, y: -zoomPan.y, scale: previewZoom }}
+                      transition={{ duration: 0.5, ease: [0.215, 0.61, 0.355, 1] }}
                     >
                       {previewSurface}
-                    </div>
+                    </motion.div>
                   </div>
                 </div>
-                <div
+                <motion.div
                   className="absolute overflow-hidden"
                   style={{
                     width: evenize(cameraSize),
                     height: evenize(cameraSize),
                     borderRadius: cameraRadius,
                     boxShadow: `0 16px 40px rgba(0,0,0,${cameraShadow / 120}), 0 0 0 1px rgba(255,255,255,0.1), inset 0 1px 0 rgba(255,255,255,0.25)`,
-                    transform: cameraMirror ? `scaleX(-1) scale(${avatarScale})` : `scale(${avatarScale})`,
                     transformOrigin:
                       cameraPosition === "top_left"
                         ? "top left"
@@ -714,7 +711,6 @@ const EditPage = () => {
                         : cameraPosition === "bottom_right"
                         ? "bottom right"
                         : "bottom left",
-                    transition: "transform 500ms cubic-bezier(0.215, 0.61, 0.355, 1)",
                     background: cameraBlur ? "rgba(15, 23, 42, 0.25)" : "rgba(15, 23, 42, 0.18)",
                     backdropFilter: cameraBlur ? "blur(18px) saturate(140%)" : "blur(10px)",
                     ...(cameraPosition === "top_left"
@@ -725,6 +721,8 @@ const EditPage = () => {
                       ? { bottom: 12, right: 12 }
                       : { bottom: 12, left: 12 }),
                   }}
+                  animate={{ scale: avatarScale, scaleX: cameraMirror ? -1 : 1 }}
+                  transition={{ duration: 0.5, ease: [0.215, 0.61, 0.355, 1] }}
                 >
                   {avatarSrc ? (
                     <video
@@ -739,7 +737,7 @@ const EditPage = () => {
                       YOU
                     </div>
                   )}
-                </div>
+                </motion.div>
                 {/* 悬浮工具栏移动到外层，避免被 overflow-hidden 裁剪 */}
               
               </div>
