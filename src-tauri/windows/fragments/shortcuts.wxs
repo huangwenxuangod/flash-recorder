@@ -12,7 +12,7 @@
         <RemoveFolder Id="RemoveStartMenuShortcut" On="uninstall" />
         <RegistryValue
           Root="HKCU"
-          Key="Software\tauri-apps\FlashRecorder"
+          Key="Software\tauri-apps\Flash Recorder"
           Name="installed"
           Type="string"
           Value="1"
@@ -30,7 +30,7 @@
         <RemoveFolder Id="RemoveDesktopShortcut" On="uninstall" />
         <RegistryValue
           Root="HKCU"
-          Key="Software\tauri-apps\FlashRecorder"
+          Key="Software\tauri-apps\Flash Recorder"
           Name="desktop"
           Type="string"
           Value="1"

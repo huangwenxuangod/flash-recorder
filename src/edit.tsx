@@ -417,7 +417,7 @@ const EditPage = () => {
 
   const buildExportPath = (input: string) => {
     const dir = localStorage.getItem(SETTINGS_EXPORT_DIR) || "D:\\recordings";
-    const name = `Flashrecoder_${sessionIdFromInput(input)}.mp4`;
+    const name = `Flash Recorder_${sessionIdFromInput(input)}.mp4`;
     return joinPath(dir, name);
   };
 

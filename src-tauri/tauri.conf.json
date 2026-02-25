@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Flashrecoder",
+  "productName": "Flash Recorder",
   "version": "0.1.0",
-  "identifier": "com.flashrecoder.app",
+  "identifier": "com.flashrecorder.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Flashrecoder",
+        "title": "Flash Recorder",
         "width": 360,
         "height": 680
       }
@@ -28,13 +28,7 @@
   "bundle": {
     "active": true,
     "targets": ["msi", "nsis"],
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ],
+    "icon": ["icons/icon.ico"],
     "resources": ["ffmpeg/*"],
     "windows": {
       "webviewInstallMode": {
