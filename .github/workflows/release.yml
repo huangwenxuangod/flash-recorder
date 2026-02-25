@@ -68,17 +68,16 @@ jobs:
       - name: Build Tauri (Windows)
         run: pnpm run tauri build
 
-      - name: Create self-signed certificate (Code Signing)
-        if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
+      - name: Prepare self-signed certificate
         shell: pwsh
         timeout-minutes: 3
         run: |
+          $pfxPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "cert.pfx"
+          $cerPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "cert.cer"
           $subject = "CN=Flash Recorder SelfSign"
           $cert = New-SelfSignedCertificate -Type CodeSigning -Subject $subject -KeyExportPolicy Exportable -KeyLength 2048 -HashAlgorithm sha256 -KeyAlgorithm RSA -NotAfter (Get-Date).AddYears(3) -CertStoreLocation Cert:\CurrentUser\My
           $pass = [guid]::NewGuid().ToString()
           $secure = ConvertTo-SecureString -String $pass -Force -AsPlainText
-          $pfxPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "cert.pfx"
-          $cerPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "cert.cer"
           Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $secure
           Export-Certificate -Cert $cert -FilePath $cerPath -ErrorAction Stop
           Import-Certificate -FilePath $cerPath -CertStoreLocation Cert:\CurrentUser\Root -ErrorAction Stop
@@ -89,6 +88,8 @@ jobs:
           if (-not $trustedCert) { throw "TrustedPublisher import failed" }
           Add-Content -Path $env:GITHUB_ENV -Value ("PFX_FILE=" + $pfxPath)
           Add-Content -Path $env:GITHUB_ENV -Value ("PFX_PASSWORD=" + $pass)
+          Add-Content -Path $env:GITHUB_ENV -Value "SIGN_MODE=selfsigned"
+          Write-Host "Using Self-signed certificate"
 
       - name: Locate signtool.exe
         shell: pwsh
@@ -97,8 +98,7 @@ jobs:
           if ($null -eq $tool) { throw "signtool.exe not found" }
           Add-Content -Path $env:GITHUB_ENV -Value ("SIGNTOOL=" + $tool.FullName)
 
-      - name: Sign MSI and NSIS installers (self-signed)
-        if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
+      - name: Sign MSI and NSIS installers
         shell: pwsh
         run: |
           $bundle = "src-tauri/target/release/bundle"
@@ -111,14 +111,8 @@ jobs:
           Write-Host ("SIGNTOOL: " + $env:SIGNTOOL)
           Write-Host ("PFX_FILE: " + $env:PFX_FILE)
           foreach ($f in $files) {
-            & $env:SIGNTOOL sign /f "$env:PFX_FILE" /p "$env:PFX_PASSWORD" /fd sha256 "$($f.FullName)"
+            & $env:SIGNTOOL sign /f "$env:PFX_FILE" /p "$env:PFX_PASSWORD" /fd sha256 /tr "http://timestamp.digicert.com" /td sha256 "$($f.FullName)"
             if ($LASTEXITCODE -ne 0) { throw ("Sign failed: " + $f.FullName) }
-            try {
-              & $env:SIGNTOOL timestamp /tr "http://timestamp.digicert.com" /td sha256 "$($f.FullName)"
-              if ($LASTEXITCODE -ne 0) { Write-Host ("Timestamp failed: " + $f.FullName) }
-            } catch {
-              Write-Host ("Timestamp exception: " + $f.FullName)
-            }
           }
 
       - name: Verify signatures
