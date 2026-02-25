@@ -107,12 +107,17 @@ jobs:
           $files += Get-ChildItem "$bundle/nsis/*.exe" -ErrorAction SilentlyContinue
           if ($files.Count -eq 0) { throw "No installer files found to sign." }
           if ([string]::IsNullOrWhiteSpace($env:PFX_FILE) -or [string]::IsNullOrWhiteSpace($env:PFX_PASSWORD)) { throw "Missing PFX_FILE or PFX_PASSWORD" }
-          $tsUrl = "http://timestamp.digicert.com"
+          if ([string]::IsNullOrWhiteSpace($env:SIGNTOOL)) { throw "SIGNTOOL not set" }
+          Write-Host ("SIGNTOOL: " + $env:SIGNTOOL)
+          Write-Host ("PFX_FILE: " + $env:PFX_FILE)
           foreach ($f in $files) {
+            & $env:SIGNTOOL sign /f "$env:PFX_FILE" /p "$env:PFX_PASSWORD" /fd sha256 "$($f.FullName)"
+            if ($LASTEXITCODE -ne 0) { throw ("Sign failed: " + $f.FullName) }
             try {
-              & $env:SIGNTOOL sign /f "$env:PFX_FILE" /p "$env:PFX_PASSWORD" /fd sha256 /tr $tsUrl /td sha256 "$($f.FullName)"
+              & $env:SIGNTOOL timestamp /tr "http://timestamp.digicert.com" /td sha256 "$($f.FullName)"
+              if ($LASTEXITCODE -ne 0) { Write-Host ("Timestamp failed: " + $f.FullName) }
             } catch {
-              & $env:SIGNTOOL sign /f "$env:PFX_FILE" /p "$env:PFX_PASSWORD" /fd sha256 /t $tsUrl "$($f.FullName)"
+              Write-Host ("Timestamp exception: " + $f.FullName)
             }
           }
 
