@@ -604,7 +604,62 @@ fn ensure_export_worker(app: tauri::AppHandle, state: Arc<Mutex<ExportManager>>)
         }
     };
     if should_spawn {
-        thread::spawn(move || export_worker(app, state));
+        tauri::async_runtime::spawn(export_worker_async(app, state));
+    }
+}
+
+async fn export_worker_async(app: tauri::AppHandle, state: Arc<Mutex<ExportManager>>) {
+    loop {
+        let job = {
+            let mut guard = match state.lock() {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
+            guard.queue.pop_front()
+        };
+        let Some(job) = job else {
+            if let Ok(mut guard) = state.lock() {
+                guard.running = false;
+            }
+            return;
+        };
+        let mut status = ExportStatus {
+            job_id: job.job_id.clone(),
+            state: "running".to_string(),
+            progress: 0.0,
+            error: None,
+            output_path: Some(job.request.output_path.clone()),
+        };
+        if let Ok(mut guard) = state.lock() {
+            guard.statuses.insert(job.job_id.clone(), status.clone());
+        }
+        emit_export_status(&app, &status);
+        let app_cloned = app.clone();
+        let state_cloned = state.clone();
+        let job_cloned = ExportJob {
+            job_id: job.job_id.clone(),
+            request: job.request.clone(),
+        };
+        let result = tauri::async_runtime::spawn_blocking(move || run_export_job(&app_cloned, &state_cloned, &job_cloned)).await;
+        let ok = match result {
+            Ok(ref r) => r.is_ok(),
+            Err(_) => false,
+        };
+        status.state = if ok { "completed".to_string() } else { "failed".to_string() };
+        status.progress = if ok { 1.0 } else { status.progress };
+        status.error = if ok {
+            None
+        } else {
+            match result {
+                Ok(r) => r.err(),
+                Err(_) => Some("export_task_join_failed".to_string()),
+            }
+        };
+        if let Ok(mut guard) = state.lock() {
+            guard.statuses.insert(job.job_id.clone(), status.clone());
+            guard.cancellations.remove(&job.job_id);
+        }
+        emit_export_status(&app, &status);
     }
 }
 
