@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Deserialize, Serialize};
 use tauri::{async_runtime, Emitter, Manager, State};
 use tokio::net::UdpSocket;
@@ -120,6 +121,7 @@ struct RecordingSession {
     id: String,
     started_at: Instant,
     child: Child,
+    cursor_stop: Arc<AtomicBool>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -235,6 +237,43 @@ impl PreviewState {
 struct PreviewSession {
     peer: Arc<RTCPeerConnection>,
     udp_task: async_runtime::JoinHandle<()>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct Rect {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CaptureMeta {
+    mode: String,
+    rect: Rect,
+    started_at_ms: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CursorEventRecord {
+    kind: String,
+    offset_ms: u64,
+    axn: f32,
+    ayn: f32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ZoomFrame {
+    time_ms: u64,
+    axn: f32,
+    ayn: f32,
+    zoom: f32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ZoomTrack {
+    fps: u32,
+    frames: Vec<ZoomFrame>,
 }
 
 fn write_error_log(output_dir: &PathBuf, message: &str) {
@@ -984,6 +1023,7 @@ fn start_recording(
     let output_path = output_dir.join("recording.mp4");
     let camera_path = output_dir.join("camera.mp4");
     let log_path = output_dir.join("ffmpeg.log");
+    let cursor_path = output_dir.join("cursor.jsonl");
 
     let fps = if request.fps == 0 { 60 } else { request.fps };
     let _ = &request.resolution;
@@ -1207,6 +1247,33 @@ fn start_recording(
         ]);
     }
 
+    let rect = {
+        if capture_mode == "region" {
+            let region = request.region.clone().ok_or("region_required")?;
+            Rect {
+                x: region.x,
+                y: region.y,
+                width: region.width,
+                height: region.height,
+            }
+        } else {
+            #[cfg(target_os = "windows")]
+            {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+                let w = unsafe { GetSystemMetrics(SM_CXSCREEN) }.max(2);
+                let h = unsafe { GetSystemMetrics(SM_CYSCREEN) }.max(2);
+                Rect { x: 0, y: 0, width: w, height: h }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Rect { x: 0, y: 0, width: 1920, height: 1080 }
+            }
+        }
+    };
+    let started_at_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis() as u64;
+    let meta = CaptureMeta { mode: capture_mode.clone(), rect: rect.clone(), started_at_ms };
+    let _ = fs::write(output_dir.join("capture.json"), serde_json::to_string(&meta).unwrap_or_default());
+
     let log_file = fs::File::create(&log_path).map_err(|e| log_error(e.to_string()))?;
 
     let child = new_cmd(&ffmpeg_binary())
@@ -1217,10 +1284,82 @@ fn start_recording(
         .spawn()
         .map_err(|_| log_error("ffmpeg_not_found".to_string()))?;
 
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    {
+        let started = Instant::now();
+        let stop_flag_clone = stop_flag.clone();
+        let cursor_path_clone = cursor_path.clone();
+        let rect_clone = rect.clone();
+        thread::spawn(move || {
+            #[cfg(target_os = "windows")]
+            {
+                use std::io::BufWriter;
+                use windows_sys::Win32::Foundation::POINT;
+                use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+                use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+                let file = fs::File::create(&cursor_path_clone);
+                if file.is_err() {
+                    return;
+                }
+                let mut writer = BufWriter::new(file.unwrap());
+                let mut last_btn = false;
+                let mut last_axn = -1f32;
+                let mut last_ayn = -1f32;
+                loop {
+                    if stop_flag_clone.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let mut pt = POINT { x: 0, y: 0 };
+                    let ok = unsafe { GetCursorPos(&mut pt as *mut POINT) };
+                    if ok == 0 {
+                        thread::sleep(Duration::from_millis(30));
+                        continue;
+                    }
+                    let rel_x = (pt.x - rect_clone.x) as f64;
+                    let rel_y = (pt.y - rect_clone.y) as f64;
+                    let axn = (rel_x / (rect_clone.width as f64)).clamp(0.0, 1.0) as f32;
+                    let ayn = (rel_y / (rect_clone.height as f64)).clamp(0.0, 1.0) as f32;
+                    let btn = unsafe { GetAsyncKeyState(VK_LBUTTON as i32) } < 0;
+                    let offset_ms = started.elapsed().as_millis() as u64;
+                    let mut wrote_move = false;
+                    if (axn - last_axn).abs() > 0.0001 || (ayn - last_ayn).abs() > 0.0001 {
+                        let rec = CursorEventRecord { kind: "move".into(), offset_ms, axn, ayn };
+                        if let Ok(line) = serde_json::to_string(&rec) {
+                            let _ = writeln!(writer, "{line}");
+                            wrote_move = true;
+                        }
+                        last_axn = axn;
+                        last_ayn = ayn;
+                    }
+                    if btn && !last_btn {
+                        let rec = CursorEventRecord { kind: "down".into(), offset_ms, axn, ayn };
+                        if let Ok(line) = serde_json::to_string(&rec) {
+                            let _ = writeln!(writer, "{line}");
+                            wrote_move = true;
+                        }
+                    } else if !btn && last_btn {
+                        let rec = CursorEventRecord { kind: "up".into(), offset_ms, axn, ayn };
+                        if let Ok(line) = serde_json::to_string(&rec) {
+                            let _ = writeln!(writer, "{line}");
+                            wrote_move = true;
+                        }
+                    }
+                    last_btn = btn;
+                    if !wrote_move {
+                        thread::sleep(Duration::from_millis(30));
+                    } else {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                }
+            }
+        });
+    }
+
     *guard = Some(RecordingSession {
         id: session_id.clone(),
         started_at: Instant::now(),
         child,
+        cursor_stop: stop_flag,
     });
 
     Ok(StartRecordingResponse {
@@ -1271,6 +1410,7 @@ fn stop_recording(
 ) -> Result<StopRecordingResponse, String> {
     let mut guard = state.inner.lock().map_err(|_| "state_lock_failed")?;
     let mut session = guard.take().ok_or("no_active_recording")?;
+    session.cursor_stop.store(true, Ordering::Relaxed);
     let duration_ms = session.started_at.elapsed().as_millis() as u64;
     let session_id = session.id.clone();
     if let Some(mut stdin) = session.child.stdin.take() {
@@ -1531,6 +1671,188 @@ fn ensure_preview(output_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn ensure_zoom_track(input_path: String) -> Result<String, String> {
+    let dir = PathBuf::from(&input_path)
+        .parent()
+        .ok_or("invalid_input_path")?
+        .to_path_buf();
+    let path = dir.join("zoom_track.json");
+    if path.exists() {
+        return Ok(path.to_string_lossy().to_string());
+    }
+    let meta_path = dir.join("capture.json");
+    let cursor_path = {
+        let mut found: Option<PathBuf> = None;
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.ends_with(".cursor.jsonl"))
+                    .unwrap_or(false)
+                {
+                    found = Some(p);
+                    break;
+                }
+            }
+        }
+        found.ok_or("cursor_events_missing")?
+    };
+    let capture_meta: CaptureMeta = serde_json::from_str(
+        &fs::read_to_string(&meta_path).map_err(|_| "capture_meta_missing")?,
+    )
+    .map_err(|_| "capture_meta_parse_failed")?;
+    let rect_w = capture_meta.rect.width.max(1) as f64;
+    let rect_h = capture_meta.rect.height.max(1) as f64;
+    let fps = 30u32;
+    let duration_ms = get_media_duration_ms(&input_path).unwrap_or(15000);
+    let mut events: Vec<CursorEventRecord> = Vec::new();
+    let data = fs::read_to_string(&cursor_path).map_err(|_| "cursor_read_failed")?;
+    for line in data.lines() {
+        if let Ok(rec) = serde_json::from_str::<CursorEventRecord>(line) {
+            events.push(rec);
+        }
+    }
+    if events.is_empty() {
+        let frames: Vec<ZoomFrame> = (0..=((duration_ms / 1000) * fps as u64))
+            .map(|i| ZoomFrame {
+                time_ms: ((i as f64) * (1000.0 / fps as f64)).round() as u64,
+                axn: 0.5,
+                ayn: 0.5,
+                zoom: 1.0,
+            })
+            .collect();
+        let track = ZoomTrack { fps, frames };
+        fs::write(&path, serde_json::to_string(&track).map_err(|_| "track_serialize_failed")?)
+            .map_err(|_| "track_write_failed")?;
+        return Ok(path.to_string_lossy().to_string());
+    }
+    let mut downs: Vec<usize> = Vec::new();
+    for (i, ev) in events.iter().enumerate() {
+        if ev.kind == "down" {
+            downs.push(i);
+        }
+    }
+    let mut windows: Vec<(f64, f64, Vec<(f64, f32, f32)>)> = Vec::new();
+    for (idx, &di) in downs.iter().enumerate() {
+        let start_rec = &events[di];
+        let s = (start_rec.offset_ms as f64) / 1000.0;
+        let next_s = downs
+            .get(idx + 1)
+            .map(|&dj| (events[dj].offset_ms as f64) / 1000.0)
+            .unwrap_or(f64::INFINITY);
+        let mut e = s + 5.0;
+        if next_s.is_finite() {
+            e = e.min(next_s);
+        }
+        let mut path_px = 0.0;
+        let mut last_axn = start_rec.axn;
+        let mut last_ayn = start_rec.ayn;
+        let mut follow_start_ms: Option<u64> = None;
+        let mut follow_start_axn: f32 = start_rec.axn;
+        let mut follow_start_ayn: f32 = start_rec.ayn;
+        for ev in events.iter().skip(di + 1) {
+            let t = (ev.offset_ms as f64) / 1000.0;
+            if t > e {
+                break;
+            }
+            if ev.kind == "move" {
+                let dx = (ev.axn - last_axn) as f64 * rect_w;
+                let dy = (ev.ayn - last_ayn) as f64 * rect_h;
+                path_px += (dx * dx + dy * dy).sqrt();
+                last_axn = ev.axn;
+                last_ayn = ev.ayn;
+                if follow_start_ms.is_none() && path_px >= 80.0 {
+                    follow_start_ms = Some(ev.offset_ms);
+                    follow_start_axn = ev.axn;
+                    follow_start_ayn = ev.ayn;
+                    break;
+                }
+            }
+        }
+        let mut anchors: Vec<(f64, f32, f32)> = Vec::new();
+        anchors.push((s, start_rec.axn, start_rec.ayn));
+        if let Some(ms) = follow_start_ms {
+            let t_follow = (ms as f64) / 1000.0;
+            anchors.push((t_follow, follow_start_axn, follow_start_ayn));
+            let mut next_sample_ms = ms + 120;
+            for ev in events.iter().skip(di + 1) {
+                let t = (ev.offset_ms as f64) / 1000.0;
+                if t > e {
+                    break;
+                }
+                if ev.kind == "move" && ev.offset_ms >= next_sample_ms {
+                    anchors.push((t, ev.axn, ev.ayn));
+                    next_sample_ms = ev.offset_ms + 120;
+                    if anchors.len() > 4000 {
+                        break;
+                    }
+                }
+            }
+        }
+        let last = anchors.last().cloned().unwrap_or(anchors[0]);
+        anchors.push((e, last.1, last.2));
+        windows.push((s, e, anchors));
+        if idx >= 100 {
+            break;
+        }
+    }
+    let total_frames = ((duration_ms as f64) / (1000.0 / fps as f64)).ceil() as u64;
+    let mut frames: Vec<ZoomFrame> = Vec::with_capacity(total_frames as usize + 1);
+    for i in 0..=total_frames {
+        let t_ms = ((i as f64) * (1000.0 / fps as f64)).round() as u64;
+        let t = (t_ms as f64) / 1000.0;
+        let mut axn: f32 = 0.5;
+        let mut ayn: f32 = 0.5;
+        let mut zoom: f32 = 1.0;
+        for (s, e, anchors) in windows.iter() {
+            if t < *s || t > *e {
+                continue;
+            }
+            let ramp = 0.5f64;
+            if t >= *s && t < *s + ramp {
+                let u = ((t - *s) / ramp).clamp(0.0, 1.0);
+                zoom = (1.0 + (2.0 - 1.0) * (1.0 - (1.0 - u).powi(3))) as f32;
+            } else if t > *e - ramp && t <= *e {
+                let u = (((*e) - t) / ramp).clamp(0.0, 1.0);
+                zoom = (1.0 + (2.0 - 1.0) * (1.0 - (1.0 - u).powi(3))) as f32;
+            } else {
+                zoom = 2.0;
+            }
+            let mut ax = anchors[0].1;
+            let mut ay = anchors[0].2;
+            for w in anchors.windows(2) {
+                let (t0, ax0, ay0) = w[0];
+                let (t1, ax1, ay1) = w[1];
+                if t >= t0 && t <= t1 {
+                    let dt = (t1 - t0).max(0.001);
+                    let u = ((t - t0) / dt).clamp(0.0, 1.0) as f32;
+                    ax = ax0 * (1.0 - u) + ax1 * u;
+                    ay = ay0 * (1.0 - u) + ay1 * u;
+                    break;
+                } else if t > t1 {
+                    ax = ax1;
+                    ay = ay1;
+                }
+            }
+            axn = ax;
+            ayn = ay;
+            break;
+        }
+        frames.push(ZoomFrame {
+            time_ms: t_ms,
+            axn,
+            ayn,
+            zoom,
+        });
+    }
+    let track = ZoomTrack { fps, frames };
+    fs::write(&path, serde_json::to_string(&track).map_err(|_| "track_serialize_failed")?)
+        .map_err(|_| "track_write_failed")?;
+    Ok(path.to_string_lossy().to_string())
+}
+#[tauri::command]
 fn get_export_dir() -> Result<String, String> {
     Ok(export_dir_with_fallback()
         .to_string_lossy()
@@ -1640,6 +1962,7 @@ pub fn run() {
             save_edit_state,
             load_edit_state,
             ensure_preview,
+            ensure_zoom_track,
             get_export_dir,
             open_path,
             start_export,
