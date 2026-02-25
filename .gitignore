@@ -13,6 +13,8 @@ dist-ssr
 *.local
 .pnpm-store
 .pnpm-cache
+.rustup-msvc
+.cargo-msvc
 
 # Editor directories and files
 .vscode/*

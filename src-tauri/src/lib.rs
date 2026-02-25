@@ -724,6 +724,7 @@ fn run_export_job(
     let job_id = job.job_id.clone();
     let app_handle = app.clone();
     let state_handle = Arc::clone(state);
+    let job_output_path = job.request.output_path.clone();
     let reader_handle = thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         let mut line = String::new();
@@ -746,6 +747,7 @@ fn run_export_job(
                             state: "running".to_string(),
                             progress: progress as f32,
                             error: None,
+                            output_path: Some(job_output_path.clone()),
                         };
                         if let Ok(mut guard) = state_handle.lock() {
                             guard.statuses.insert(job_id.clone(), status.clone());
@@ -1474,11 +1476,13 @@ fn start_export(
         .map_err(|e| e.to_string())?
         .as_millis()
         .to_string();
+    let normalized_output = normalize_export_output_path(&request);
     let status = ExportStatus {
         job_id: job_id.clone(),
         state: "queued".to_string(),
         progress: 0.0,
         error: None,
+        output_path: Some(normalized_output.clone()),
     };
     {
         let mut guard = state.inner.lock().map_err(|_| "export_state_lock_failed")?;
@@ -1486,7 +1490,7 @@ fn start_export(
         guard.queue.push_back(ExportJob {
             job_id: job_id.clone(),
             request: ExportRequest {
-                output_path: normalize_export_output_path(&request),
+                output_path: normalized_output,
                 ..request
             },
         });
