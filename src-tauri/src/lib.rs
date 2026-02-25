@@ -495,8 +495,11 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     let shrink = if edit_state.aspect == "9:16" { 0.92f32 } else { 1.0f32 };
     let target_w = evenize(((inner_w as f32) * shrink).round() as i32).max(2);
     let target_h = evenize(((inner_h as f32) * shrink).round() as i32).max(2);
+    let super_w = evenize((target_w * 2).max(2));
+    let super_h = evenize((target_h * 2).max(2));
     let base = format!(
-        "{bg_source}[bg];[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,format=rgba"
+        "{bg_source}[bg];[0:v]scale={super_w}:{super_h}:force_original_aspect_ratio=decrease,format=rgba,zoompan=z='pzoom+0.001':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={target_w}x{target_h}:fps={fps}",
+        fps = profile.fps
     );
     let rounded = if radius > 0 {
         let alpha_expr = rounded_alpha_expr(radius);
@@ -538,8 +541,7 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
         _ => 420,
     };
     let scale_w = ((output_w as f32) / (baseline_w as f32)) * 0.60;
-    let mut camera_size =
-        evenize(((edit_state.camera_size as f32) * scale_w).round() as i32).max(2);
+    let mut camera_size = evenize(((edit_state.camera_size as f32) * scale_w).round() as i32).max(2);
     let offset = evenize((12.0 * scale_w).round() as i32).max(0);
     let (camera_x, camera_y) = match edit_state.camera_position.as_str() {
         "top_left" => (offset, offset),
