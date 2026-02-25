@@ -8,8 +8,6 @@ import { FiCamera, FiFolder, FiMic, FiMonitor, FiPlay, FiSettings, FiVideo } fro
 import "./App.css";
 import { SelectMenu, type SelectOption } from "./components/SelectMenu";
 
- 
-
 type CaptureMode = "screen" | "window" | "region";
 
 type CaptureRegion = {
@@ -175,8 +173,8 @@ function MainApp() {
   const [isRecording, setIsRecording] = useState(false);
   const [camera, setCamera] = useState("auto");
   const [mic, setMic] = useState("auto");
-  const [outputPath, setOutputPath] = useState("");
-  const [logPath, setLogPath] = useState("");
+  const [, setOutputPath] = useState("");
+  const [, setLogPath] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [audioDevices, setAudioDevices] = useState<string[]>([]);
   const [videoDevices, setVideoDevices] = useState<string[]>([]);
@@ -188,6 +186,7 @@ function MainApp() {
   const [settings, setSettings] = useState<AppSettings>(() => defaultSettings());
   const [view, setView] = useState<"main" | "settings">("main");
   const [autostartLoading, setAutostartLoading] = useState(true);
+  const [defaultExportDir, setDefaultExportDir] = useState("");
 
   const fpsOptions = [24, 30, 60];
   const resolutionOptions = [720, 1080, 1440, 2160];
@@ -208,6 +207,11 @@ function MainApp() {
     invoke<string[]>("list_audio_devices")
       .then((devices) => setAudioDevices(devices))
       .catch((error) => setErrorMessage(String(error)));
+  }, []);
+  useEffect(() => {
+    invoke<string>("get_export_dir")
+      .then((dir) => setDefaultExportDir(dir))
+      .catch(() => null);
   }, []);
 
   useEffect(() => {
@@ -341,6 +345,7 @@ function MainApp() {
       await existing.setSize(new PhysicalSize(1600, 900));
       await existing.show();
       await existing.setFocus();
+      await getCurrentWindow().hide();
       return;
     }
     new WebviewWindow("edit", {
@@ -353,6 +358,7 @@ function MainApp() {
       skipTaskbar: false,
       title: "Edit",
     });
+    await getCurrentWindow().hide();
   };
 
   const startRecording = async (options?: {
@@ -574,7 +580,7 @@ function MainApp() {
                         <span className="flex items-center gap-3">
                           <FiFolder className="text-slate-500" />
                           <span className="text-sm font-medium text-slate-100">
-                            {settings.exportDir || "D:\\recordings"}
+                            {settings.exportDir || defaultExportDir || "recordings"}
                           </span>
                         </span>
                         <span className="text-xs text-slate-400">选择</span>
@@ -700,11 +706,13 @@ function MainApp() {
                   />
                 </div>
 
-                <div className="rounded-xl border border-slate-800/80 bg-slate-950/70 px-3 py-2 text-xs text-slate-400">
-                  {outputPath || "D:\\recordings"}
-                  {logPath ? <div className="mt-2">{logPath}</div> : null}
-                  {errorMessage ? <div className="mt-2 text-red-300">{errorMessage}</div> : null}
-                </div>
+                {/* 移除首页“打开文件夹”入口 */}
+
+                {errorMessage ? (
+                  <div className="rounded-xl border border-slate-800/80 bg-slate-950/70 px-3 py-2 text-xs text-red-300">
+                    {errorMessage}
+                  </div>
+                ) : null}
               </section>
             </>
           )}

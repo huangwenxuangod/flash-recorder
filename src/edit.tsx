@@ -3,10 +3,12 @@ import ReactDOM from "react-dom/client";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
-import { FiCamera, FiUser, FiImage, FiMinus, FiPause, FiPlay, FiPlus, FiSliders } from "react-icons/fi";
+import { FiCamera, FiUser, FiImage, FiMinus, FiPause, FiPlay, FiPlus, FiSliders, FiFolder } from "react-icons/fi";
 import { Toaster, toast } from "react-hot-toast";
 import "./App.css";
 import { SelectMenu, type SelectOption } from "./components/SelectMenu";
+
+const SETTINGS_EXPORT_DIR = "settingsExportDir";
 
 type EditState = {
   aspect: string;
@@ -51,7 +53,7 @@ const EditPage = () => {
   const [editRadius, setEditRadius] = useState(12);
   const [editShadow, setEditShadow] = useState(20);
   const [editAspect, setEditAspect] = useState<"16:9" | "1:1" | "9:16">("16:9");
-  const [cameraSize, setCameraSize] = useState(104);
+  const [cameraSize, setCameraSize] = useState(168);
   const [cameraShape, setCameraShape] = useState<"circle" | "rounded" | "square">("circle");
   const [cameraShadow, setCameraShadow] = useState(22);
   const [cameraMirror, setCameraMirror] = useState(false);
@@ -221,14 +223,7 @@ const EditPage = () => {
     setAvatarSrc(convertFileSrc(cameraPath));
   }, [cameraPath]);
 
-  const SETTINGS_EXPORT_DIR = "settingsExportDir";
-  const joinPath = (dir: string, name: string) => {
-    if (dir.endsWith("\\") || dir.endsWith("/")) {
-      return `${dir}${name}`;
-    }
-    const sep = dir.includes("\\") ? "\\" : "/";
-    return `${dir}${sep}${name}`;
-  };
+  // 移除未使用的路径拼接与设置常量
   const sessionIdFromInput = (input: string) => {
     const parts = input.split(/[/\\]/);
     return parts.length >= 2 ? parts[parts.length - 2] : "export";
@@ -286,8 +281,6 @@ const EditPage = () => {
         }
         toast.success("导出完成");
         setPreviewError("");
-        const path = status.output_path || buildExportPath(outputPath);
-        setPreviewSrc(convertFileSrc(path));
         setPreviewLoading(false);
       }
       if (status.state === "failed" && lastExportStateRef.current !== "failed") {
@@ -433,10 +426,35 @@ const EditPage = () => {
   const exportBusy =
     exportStatus?.state === "running" || exportStatus?.state === "queued";
 
+  const [exportDir, setExportDir] = useState("");
+  useEffect(() => {
+    const saved = localStorage.getItem(SETTINGS_EXPORT_DIR) || "";
+    if (saved) {
+      setExportDir(saved);
+    } else {
+      invoke<string>("get_export_dir")
+        .then((dir) => setExportDir(dir))
+        .catch(() => null);
+    }
+  }, []);
+  const joinPath = (dir: string, name: string) => {
+    if (!dir) return name;
+    const hasSep = dir.endsWith("\\") || dir.endsWith("/");
+    if (hasSep) return `${dir}${name}`;
+    const sep = dir.includes("\\") ? "\\" : "/";
+    return `${dir}${sep}${name}`;
+  };
   const buildExportPath = (input: string) => {
-    const dir = localStorage.getItem(SETTINGS_EXPORT_DIR) || "D:\\recordings";
     const name = `Flash Recorder_${sessionIdFromInput(input)}.mp4`;
-    return joinPath(dir, name);
+    return joinPath(exportDir, name);
+  };
+  const openExportFolder = async () => {
+    try {
+      const dir = await invoke<string>("get_export_dir");
+      await invoke("open_path", { path: dir });
+    } catch (error) {
+      toast.error(String(error).split("\n")[0].slice(0, 140));
+    }
   };
 
   const profileForAspect = () => {
@@ -617,8 +635,8 @@ const EditPage = () => {
                 <div
                   className="absolute overflow-hidden"
                   style={{
-                    width: cameraSize,
-                    height: cameraSize,
+                    width: evenize(cameraSize),
+                    height: evenize(cameraSize),
                     borderRadius: cameraRadius,
                     boxShadow: `0 16px 40px rgba(0,0,0,${cameraShadow / 120}), 0 0 0 1px rgba(255,255,255,0.1), inset 0 1px 0 rgba(255,255,255,0.25)`,
                     transform: cameraMirror ? "scaleX(-1)" : "none",
@@ -690,6 +708,14 @@ const EditPage = () => {
                   <span className="mr-1 inline-block h-3 w-3 animate-spin rounded-full border-2 border-slate-300 border-r-transparent" />
                 ) : null}
                 <span>导出</span>
+              </button>
+              <button
+                type="button"
+                onClick={openExportFolder}
+                className="flex items-center gap-2 rounded-full border border-white/10 px-2.5 py-1 transition bg-slate-950/70 text-slate-200 hover:border-cyan-400/50"
+              >
+                <FiFolder />
+                <span>打开文件夹</span>
               </button>
             </div>
 
@@ -810,8 +836,9 @@ const EditPage = () => {
                     <input
                       className="mt-2 w-full"
                       type="range"
-                      min={80}
-                      max={170}
+                      min={120}
+                      max={320}
+                      step={2}
                       value={cameraSize}
                       onChange={(event) => setCameraSize(Number(event.target.value))}
                     />
@@ -1015,8 +1042,9 @@ const EditPage = () => {
                       <input
                         className="mt-2 w-full"
                         type="range"
-                        min={80}
-                        max={170}
+                        min={120}
+                        max={320}
+                        step={2}
                         value={cameraSize}
                         onChange={(event) => setCameraSize(Number(event.target.value))}
                       />

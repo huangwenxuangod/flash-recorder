@@ -145,7 +145,7 @@ impl Default for EditState {
             padding: 0,
             radius: 12,
             shadow: 20,
-            camera_size: 104,
+            camera_size: 168,
             camera_shape: "circle".to_string(),
             camera_shadow: 22,
             camera_mirror: false,
@@ -267,20 +267,21 @@ fn preview_path(output_path: &str) -> PathBuf {
     export_dir_with_fallback().join(name)
 }
 
+fn app_install_dir() -> PathBuf {
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            return dir.to_path_buf();
+        }
+    }
+    PathBuf::from(".")
+}
+
+fn app_data_root() -> PathBuf {
+    app_install_dir()
+}
+
 fn work_base_dir() -> PathBuf {
-    if let Ok(local) = env::var("LOCALAPPDATA") {
-        let mut p = PathBuf::from(local);
-        p.push("Flash_Recorder");
-        p.push("work");
-        return p;
-    }
-    if let Ok(home) = env::var("HOME") {
-        let mut p = PathBuf::from(home);
-        p.push(".flash_recorder");
-        p.push("work");
-        return p;
-    }
-    PathBuf::from("work")
+    app_data_root().join("work")
 }
 
 fn user_videos_dir() -> PathBuf {
@@ -291,7 +292,7 @@ fn user_videos_dir() -> PathBuf {
 }
 
 fn export_dir_with_fallback() -> PathBuf {
-    let preferred = PathBuf::from(r"D:\recordings");
+    let preferred = app_data_root().join("recordings");
     if fs::create_dir_all(&preferred).is_ok() {
         return preferred;
     }
@@ -530,11 +531,16 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     if !has_camera {
         return base;
     }
-    let scale = (output_w as f32 / 420.0).max(0.1);
-    let camera_scale = if edit_state.aspect == "9:16" { 2.0 } else { 1.0 };
-    let mut camera_size = (edit_state.camera_size as f32 * scale * camera_scale).round() as i32;
-    camera_size = evenize(camera_size.max(2));
-    let offset = (12.0 * scale).round() as i32;
+    let baseline_w = match edit_state.aspect.as_str() {
+        "16:9" => 420,
+        "1:1" => 236,
+        "9:16" => 132,
+        _ => 420,
+    };
+    let scale_w = ((output_w as f32) / (baseline_w as f32)) * 0.60;
+    let mut camera_size =
+        evenize(((edit_state.camera_size as f32) * scale_w).round() as i32).max(2);
+    let offset = evenize((12.0 * scale_w).round() as i32).max(0);
     let (camera_x, camera_y) = match edit_state.camera_position.as_str() {
         "top_left" => (offset, offset),
         "top_right" => ((output_w - camera_size - offset).max(0), offset),
@@ -546,8 +552,8 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     };
     let camera_radius = match edit_state.camera_shape.as_str() {
         "circle" => camera_size / 2,
-        "rounded" => (18.0 * scale).round() as i32,
-        _ => (6.0 * scale).round() as i32,
+        "rounded" => evenize((18.0 * scale_w).round() as i32).max(0),
+        _ => evenize((6.0 * scale_w).round() as i32).max(0),
     }
     .min(camera_size / 2);
     let camera_shadow = edit_state.camera_shadow as i32;
@@ -1468,6 +1474,33 @@ fn ensure_preview(output_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn get_export_dir() -> Result<String, String> {
+    Ok(export_dir_with_fallback()
+        .to_string_lossy()
+        .to_string())
+}
+
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut target = {
+            let p = PathBuf::from(&path);
+            if p.exists() { p } else { export_dir_with_fallback() }
+        };
+        if !target.exists() {
+            let _ = fs::create_dir_all(&target);
+        }
+        let _ = new_cmd("explorer").arg(&target).spawn();
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        Err("unsupported_platform".to_string())
+    }
+}
+#[tauri::command]
 fn start_export(
     app: tauri::AppHandle,
     state: State<ExportState>,
@@ -1528,6 +1561,7 @@ fn cancel_export(state: State<ExportState>, job_id: String) -> Result<(), String
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     maybe_migrate_old_recordings();
+    let _ = fs::create_dir_all(export_dir_with_fallback());
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
@@ -1549,6 +1583,8 @@ pub fn run() {
             save_edit_state,
             load_edit_state,
             ensure_preview,
+            get_export_dir,
+            open_path,
             start_export,
             get_export_status,
             cancel_export
