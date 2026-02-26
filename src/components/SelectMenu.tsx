@@ -1,4 +1,5 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
+import { Button } from "@heroui/react";
 
 export type SelectOption = {
   value: string;
@@ -33,7 +34,7 @@ export function SelectMenu({ value, options, onChange, icon }: SelectMenuProps) 
 
   return (
     <div className="relative" ref={rootRef}>
-      <button
+      <Button
         className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-800/80 bg-slate-950/90 px-3 py-2.5 text-left transition hover:border-slate-700/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400/30"
         type="button"
         onClick={() => setOpen((prev) => !prev)}
@@ -47,7 +48,7 @@ export function SelectMenu({ value, options, onChange, icon }: SelectMenuProps) 
           </span>
         </span>
         <svg
-          xmlns="http://www.w3.org/2000/svg"
+          xmlns="https://www.w3.org/2000/svg"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
@@ -55,7 +56,7 @@ export function SelectMenu({ value, options, onChange, icon }: SelectMenuProps) 
         >
           <path d="M6 9l6 6 6-6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
-      </button>
+      </Button>
       {open ? (
         <div
           className="absolute left-0 right-0 z-50 mt-2 rounded-2xl border border-slate-800/80 bg-slate-950/95 p-1 shadow-2xl backdrop-blur"
@@ -65,7 +66,7 @@ export function SelectMenu({ value, options, onChange, icon }: SelectMenuProps) 
             {options.map((option) => {
               const selected = option.value === value;
               return (
-                <button
+                <Button
                   key={option.value}
                   type="button"
                   role="option"
@@ -79,7 +80,7 @@ export function SelectMenu({ value, options, onChange, icon }: SelectMenuProps) 
                   }`}
                 >
                   {option.label}
-                </button>
+                </Button>
               );
             })}
           </div>

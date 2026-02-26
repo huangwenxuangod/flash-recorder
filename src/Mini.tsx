@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { FiSquare } from "react-icons/fi";
+import { Button } from "@heroui/react";
 import "./App.css";
 
 function Mini() {
@@ -206,15 +207,15 @@ function Mini() {
             <div className="text-[12px] font-semibold text-white">{timerText}</div>
           </div>
           <div className="flex-1" />
-          <button
-            className="flex h-10 w-10 items-center justify-center rounded-full border border-red-400/40 bg-red-500/15 text-red-200 transition hover:bg-red-500/25 disabled:opacity-60"
+          <Button
+            className="flex h-12 w-12 items-center justify-center rounded-full border border-red-400/40 bg-red-500/15 text-red-200 transition hover:bg-red-500/25 disabled:opacity-60"
             type="button"
             onClick={stopRecording}
             disabled={!isRecording}
             aria-label="停止录制"
           >
-            <FiSquare />
-          </button>
+            <FiSquare size={32} />
+          </Button>
         </div>
         {errorMessage ? <div className="ml-3 text-xs text-red-300">{errorMessage}</div> : null}
       </div>
