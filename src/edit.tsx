@@ -23,6 +23,15 @@ type ZoomFrame = {
 type ZoomTrack = {
   fps: number;
   frames: ZoomFrame[];
+  settings?: {
+    max_zoom?: number;
+  };
+};
+type CursorEvent = {
+  kind: string;
+  offset_ms: number;
+  axn: number;
+  ayn: number;
 };
 
 type Block = { id: string; start: number; end: number };
@@ -44,6 +53,10 @@ type EditState = {
   shrink_9_16?: number;
   portrait_split?: boolean;
   portrait_bottom_ratio?: number;
+  safe_x?: number;
+  safe_y?: number;
+  safe_w?: number;
+  safe_h?: number;
 };
 
 type ExportStatus = {
@@ -92,6 +105,7 @@ const EditPage = () => {
   const activeJobIdRef = useRef<string | null>(null);
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const avatarVideoRef = useRef<HTMLVideoElement | null>(null);
+  const compositeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [previewDuration, setPreviewDuration] = useState(0);
   const [previewTime, setPreviewTime] = useState(0);
   const [previewPlaying, setPreviewPlaying] = useState(false);
@@ -115,6 +129,9 @@ const EditPage = () => {
   const smoothAxnRef = useRef<number | null>(null);
   const smoothAynRef = useRef<number | null>(null);
   const smoothZoomRef = useRef<number | null>(null);
+  const [zoomProgress, setZoomProgress] = useState(0);
+  const zoomProgressRef = useRef(0);
+  const [cursorEvents, setCursorEvents] = useState<CursorEvent[]>([]);
   const [clipBlocks, setClipBlocks] = useState<Block[]>([]);
   const [zoomBlocks, setZoomBlocks] = useState<Block[]>([]);
   const [avatarBlocks, setAvatarBlocks] = useState<Block[]>([]);
@@ -200,6 +217,33 @@ const EditPage = () => {
         setZoomTrack(data as ZoomTrack);
       })
       .catch(() => null);
+  }, [previewSrc, outputPath]);
+  useEffect(() => {
+    if (!previewSrc || !outputPath) {
+      setCursorEvents([]);
+      return;
+    }
+    invoke<string>("ensure_cursor_track", { inputPath: outputPath })
+      .then(async (cursorPath) => {
+        const url = convertFileSrc(cursorPath);
+        const res = await fetch(url);
+        const text = await res.text();
+        const events: CursorEvent[] = [];
+        for (const line of text.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const rec = JSON.parse(line) as CursorEvent;
+            if (typeof rec.axn === "number" && typeof rec.ayn === "number") {
+              events.push(rec);
+            }
+          } catch {
+            continue;
+          }
+        }
+        events.sort((a, b) => a.offset_ms - b.offset_ms);
+        setCursorEvents(events);
+      })
+      .catch(() => setCursorEvents([]));
   }, [previewSrc, outputPath]);
 
   useEffect(() => {
@@ -318,26 +362,31 @@ const EditPage = () => {
     await invoke<string>("save_camera_track", { inputPath: outputPath, trackJson: JSON.stringify(payload) }).catch(() => null);
   };
   const persistZoomBlocks = async (blocks: { id: string; start: number; end: number }[]) => {
-    if (!outputPath || !previewDuration) return;
+    if (!outputPath) return;
     const fps = 30;
-    const totalFrames = Math.max(1, Math.round(previewDuration * fps));
+    const videoDuration =
+      previewVideoRef.current && Number.isFinite(previewVideoRef.current.duration)
+        ? previewVideoRef.current.duration
+        : 0;
+    const maxEnd = blocks.reduce((acc, b) => Math.max(acc, b.end), 0);
+    const duration = Math.max(previewDuration || 0, videoDuration, maxEnd);
+    const totalFrames = Math.max(1, Math.round(duration * fps));
     const frames: ZoomFrame[] = [];
     const rampIn = 0.4;
     const rampOut = 0.4;
     const ease = (u: number) => 1 + (2 - 1) * (1 - Math.pow(1 - Math.max(0, Math.min(1, u)), 3));
+    let cursorIndex = 0;
+    let currentAxn = 0.5;
+    let currentAyn = 0.5;
     for (let i = 0; i < totalFrames; i++) {
       const t = i / fps;
       let inWindow = false;
       let z = 1;
-      let ax = 0.5;
-      let ay = 0.5;
-      if (zoomTrack && Array.isArray(zoomTrack.frames) && zoomTrack.frames.length > 0) {
-        const si = Math.max(0, Math.min(zoomTrack.frames.length - 1, Math.round(t * (zoomTrack.fps || fps))));
-        const sf = zoomTrack.frames[si];
-        if (sf) {
-          ax = typeof sf.axn === "number" ? sf.axn : ax;
-          ay = typeof sf.ayn === "number" ? sf.ayn : ay;
-        }
+      const tMs = Math.round(t * 1000);
+      while (cursorIndex < cursorEvents.length && cursorEvents[cursorIndex].offset_ms <= tMs) {
+        currentAxn = cursorEvents[cursorIndex].axn;
+        currentAyn = cursorEvents[cursorIndex].ayn;
+        cursorIndex += 1;
       }
       for (const b of blocks) {
         if (t >= b.start && t <= b.end) {
@@ -355,9 +404,9 @@ const EditPage = () => {
         }
       }
       frames.push({
-        time_ms: Math.round(t * 1000),
-        axn: ax,
-        ayn: ay,
+        time_ms: tMs,
+        axn: currentAxn,
+        ayn: currentAyn,
         zoom: inWindow ? z : 1.0,
       });
     }
@@ -535,6 +584,7 @@ const EditPage = () => {
     if (!outputPath || !hasLoadedRef.current) {
       return;
     }
+    const safeRect = safeRectForAspect();
     const editState: EditState = {
       aspect: editAspect,
       padding: editPadding,
@@ -548,6 +598,10 @@ const EditPage = () => {
       background_type: backgroundType,
       background_preset: backgroundPreset,
       camera_position: cameraPosition,
+      safe_x: safeRect.x,
+      safe_y: safeRect.y,
+      safe_w: safeRect.w,
+      safe_h: safeRect.h,
     };
     invoke("save_edit_state", { outputPath, editState }).catch(() => null);
   }, [
@@ -695,6 +749,23 @@ const EditPage = () => {
     backgroundType === "gradient"
       ? backgroundPresets.gradients[backgroundPreset % backgroundPresets.gradients.length]
       : backgroundPresets.wallpapers[backgroundPreset % backgroundPresets.wallpapers.length];
+  const backgroundStops = useMemo(
+    () => ({
+      gradients: [
+        { start: "#6ee7ff", mid: "#a855f7", end: "#f97316", midPos: 0.5 },
+        { start: "#0f172a", mid: "#1e40af", end: "#38bdf8", midPos: 0.55 },
+        { start: "#111827", mid: "#7c3aed", end: "#ec4899", midPos: 0.6 },
+        { start: "#0b1020", mid: "#0f766e", end: "#22d3ee", midPos: 0.6 },
+      ],
+      wallpapers: [
+        { start: "#0f172a", end: "#1f2937" },
+        { start: "#0b1020", end: "#1f1b3a" },
+        { start: "#1f2937", end: "#0f172a" },
+        { start: "#0a0f1f", end: "#0b1020" },
+      ],
+    }),
+    []
+  );
 
   const previewAspect = useMemo(() => {
     if (editAspect === "1:1") {
@@ -711,6 +782,44 @@ const EditPage = () => {
   const MARGIN_LR_169 = 0.06;
   const MARGIN_TB_916 = 0.36;
   const MARGIN_TB_11 = 0.24;
+  const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+  const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+  const easeInOutCubic = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+  const drawCanvasBackground = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
+    if (backgroundType === "wallpaper") {
+      const stops = backgroundStops.wallpapers[backgroundPreset % backgroundStops.wallpapers.length];
+      const grad = ctx.createLinearGradient(0, 0, w, h);
+      grad.addColorStop(0, stops.start);
+      grad.addColorStop(1, stops.end);
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+      return;
+    }
+    const stops = backgroundStops.gradients[backgroundPreset % backgroundStops.gradients.length];
+    const grad = ctx.createLinearGradient(0, 0, w, h);
+    grad.addColorStop(0, stops.start);
+    grad.addColorStop(stops.midPos, stops.mid);
+    grad.addColorStop(1, stops.end);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+  };
+  const safeRectForAspect = () => {
+    let marginLR = 0;
+    let marginTB = 0;
+    if (editAspect === "16:9") {
+      marginLR = MARGIN_LR_169;
+    } else if (editAspect === "1:1") {
+      marginTB = MARGIN_TB_11;
+    } else {
+      marginTB = MARGIN_TB_916;
+    }
+    const w = Math.max(0, 1 - marginLR * 2);
+    const h = Math.max(0, 1 - marginTB * 2);
+    return { x: marginLR, y: marginTB, w, h };
+  };
+  const avatarZoomTarget = editAspect === "9:16" ? 0.62 : 0.7;
+  const zoomAvatarScale = lerp(1, avatarZoomTarget, zoomProgress);
+  const effectiveAvatarScale = Math.min(avatarScale, zoomAvatarScale);
   const exportDisabled =
     !outputPath || exportStatus?.state === "running" || exportStatus?.state === "queued";
   const cameraRadius =
@@ -776,6 +885,7 @@ const EditPage = () => {
       return;
     }
     const size = profileForAspect();
+    const safeRect = safeRectForAspect();
     const editState: EditState = {
       aspect: editAspect,
       padding: editPadding,
@@ -789,8 +899,13 @@ const EditPage = () => {
       background_type: backgroundType,
       background_preset: backgroundPreset,
       camera_position: cameraPosition,
+      safe_x: safeRect.x,
+      safe_y: safeRect.y,
+      safe_w: safeRect.w,
+      safe_h: safeRect.h,
     };
     try {
+      await persistZoomBlocks(zoomBlocks);
       const response = await invoke<{ job_id: string }>("start_export", {
         request: {
           input_path: outputPath,
@@ -882,27 +997,6 @@ const EditPage = () => {
     if (video.readyState < 2 || !vw || !vh || !Number.isFinite(video.currentTime)) return;
     ctx.imageSmoothingEnabled = true;
     ctx.clearRect(0, 0, cw, ch);
-    let dx = cw;
-    let dy = ch;
-    let destX = 0;
-    let destY = 0;
-    if (editAspect === "16:9") {
-      dx = Math.round(cw * (1 - MARGIN_LR_169));
-      dy = ch;
-      destX = Math.round((cw - dx) / 2);
-      destY = 0;
-    } else if (editAspect === "1:1") {
-      dx = cw;
-      dy = evenize(Math.round(ch * (1 - MARGIN_TB_11)));
-      destX = 0;
-      destY = Math.round((ch - dy) / 2);
-    } else {
-      dx = cw;
-      dy = evenize(Math.round(ch * (1 - MARGIN_TB_916)));
-      destX = 0;
-      destY = Math.round((ch - dy) / 2);
-    }
-    const rr = dx / dy;
     let z = 1;
     let axn = 0.5;
     let ayn = 0.5;
@@ -931,16 +1025,62 @@ const EditPage = () => {
     z = nextZ;
     axn = nextAxn;
     ayn = nextAyn;
-    const sw = Math.max(1, Math.round(vw / Math.max(1e-6, z)));
-    const sh = Math.max(1, Math.round(vh / Math.max(1e-6, z)));
-    const sx = Math.max(0, Math.min(Math.round(axn * vw - sw / 2), vw - sw));
-    const sy = Math.max(0, Math.min(Math.round(ayn * vh - sh / 2), vh - sh));
-    const cropAspect = sw / sh;
-    const dw = cropAspect >= rr ? dx : Math.round(dy * cropAspect);
-    const dh = cropAspect >= rr ? Math.round(dx / cropAspect) : dy;
-    const ox = destX + Math.round((dx - dw) / 2);
-    const oy = destY + Math.round((dy - dh) / 2);
-    ctx.drawImage(video, sx, sy, sw, sh, ox, oy, dw, dh);
+    const maxZoom = Math.max(1.0001, zoomTrack?.settings?.max_zoom ?? 2);
+    const rawProgress = (z - 1) / (maxZoom - 1);
+    const easedProgress = easeInOutCubic(clamp(rawProgress, 0, 1));
+    if (Math.abs(zoomProgressRef.current - easedProgress) > 0.001) {
+      zoomProgressRef.current = easedProgress;
+      setZoomProgress(easedProgress);
+    }
+    const safeRect = safeRectForAspect();
+    const safeX = Math.round(safeRect.x * cw);
+    const safeY = Math.round(safeRect.y * ch);
+    const safeW = Math.max(1, Math.round(safeRect.w * cw));
+    const safeH = Math.max(1, Math.round(safeRect.h * ch));
+    const composite = compositeCanvasRef.current ?? document.createElement("canvas");
+    if (!compositeCanvasRef.current) {
+      compositeCanvasRef.current = composite;
+    }
+    if (composite.width !== cw || composite.height !== ch) {
+      composite.width = cw;
+      composite.height = ch;
+    }
+    const compCtx = composite.getContext("2d");
+    if (!compCtx) return;
+    compCtx.imageSmoothingEnabled = true;
+    compCtx.clearRect(0, 0, cw, ch);
+    drawCanvasBackground(compCtx, cw, ch);
+    const destAspect = safeW / safeH;
+    const videoAspect = vw / vh;
+    let srcW = vw;
+    let srcH = vh;
+    let srcX = 0;
+    let srcY = 0;
+    if (videoAspect >= destAspect) {
+      srcH = vh;
+      srcW = Math.max(1, Math.round(vh * destAspect));
+      srcX = Math.round((vw - srcW) / 2);
+      srcY = 0;
+    } else {
+      srcW = vw;
+      srcH = Math.max(1, Math.round(vw / destAspect));
+      srcX = 0;
+      srcY = Math.round((vh - srcH) / 2);
+    }
+    compCtx.drawImage(video, srcX, srcY, srcW, srcH, safeX, safeY, safeW, safeH);
+    const sw = Math.max(1, Math.round(cw / Math.max(1e-6, z)));
+    const sh = Math.max(1, Math.round(ch / Math.max(1e-6, z)));
+    const baseX = safeX + Math.round(axn * safeW - sw / 2);
+    const baseY = safeY + Math.round(ayn * safeH - sh / 2);
+    const baseXClamped = clamp(baseX, 0, Math.max(0, cw - sw));
+    const baseYClamped = clamp(baseY, 0, Math.max(0, ch - sh));
+    const safeMaxX = Math.max(safeX, safeX + safeW - sw);
+    const safeMaxY = Math.max(safeY, safeY + safeH - sh);
+    const safeXClamped = clamp(baseXClamped, safeX, safeMaxX);
+    const safeYClamped = clamp(baseYClamped, safeY, safeMaxY);
+    const sx = Math.round(lerp(baseXClamped, safeXClamped, easedProgress));
+    const sy = Math.round(lerp(baseYClamped, safeYClamped, easedProgress));
+    ctx.drawImage(composite, sx, sy, sw, sh, 0, 0, cw, ch);
     return;
   };
   useEffect(() => {
@@ -1051,7 +1191,7 @@ const EditPage = () => {
                       ? { bottom: 12, right: 12 }
                       : { bottom: editAspect === "9:16" ? 16 : 12, left: editAspect === "9:16" ? 16 : 12 }),
                   }}
-                  animate={{ scale: avatarScale, scaleX: cameraMirror ? -1 : 1 }}
+                  animate={{ scale: effectiveAvatarScale, scaleX: cameraMirror ? -1 : 1 }}
                   transition={{ duration: 0.5, ease: [0.215, 0.61, 0.355, 1] }}
                 >
                   {avatarSrc ? (

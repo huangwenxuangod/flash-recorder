@@ -173,6 +173,14 @@ struct EditState {
     title_safe_9_16: f32,
     #[serde(default)]
     subtitle_safe_9_16: f32,
+    #[serde(default)]
+    safe_x: f32,
+    #[serde(default)]
+    safe_y: f32,
+    #[serde(default)]
+    safe_w: f32,
+    #[serde(default)]
+    safe_h: f32,
 }
 
 impl Default for EditState {
@@ -204,6 +212,10 @@ impl Default for EditState {
             subtitle_safe_1_1: 0.12,
             title_safe_9_16: 0.08,
             subtitle_safe_9_16: 0.10,
+            safe_x: 0.0,
+            safe_y: 0.0,
+            safe_w: 1.0,
+            safe_h: 1.0,
         }
     }
 }
@@ -614,7 +626,7 @@ fn rounded_alpha_expr(radius: i32) -> String {
     )
 }
 
-fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_camera: bool, zoom_override: Option<(String, String, String)>, camera_enable: Option<String>, clip_select: Option<String>) -> String {
+fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_camera: bool, zoom_override: Option<(String, String, String, String)>, camera_enable: Option<String>, clip_select: Option<String>) -> String {
     let output_w = profile.width as i32;
     let output_h = profile.height as i32;
     let aspect = aspect_ratio(&edit_state.aspect);
@@ -639,6 +651,7 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     let shadow_alpha = ((shadow as f32) / 120.0).clamp(0.0, 0.6);
     let shadow_offset = (shadow / 6).max(0);
     let bg_source = background_source(edit_state, output_w, output_h, profile.fps);
+    let bg_comp_source = background_source(edit_state, inner_w, inner_h, profile.fps);
     let is_portrait_split = false;
     let margin_lr_169 = 0.06f32;
     let margin_tb_916 = 0.36f32;
@@ -659,10 +672,53 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     let super_h = evenize((target_h * 2).max(2));
     let base = if is_portrait_split {
         unreachable!()
-    } else if let Some((z_expr, x_expr, y_expr)) = zoom_override.as_ref() {
+    } else if let Some((z_expr, x_expr, y_expr, p_expr)) = zoom_override.as_ref() {
         {
+            let safe_x = edit_state.safe_x.clamp(0.0, 1.0);
+            let safe_y = edit_state.safe_y.clamp(0.0, 1.0);
+            let safe_w = edit_state.safe_w.clamp(0.0, 1.0);
+            let safe_h = edit_state.safe_h.clamp(0.0, 1.0);
+            let safe_x_expr = format!("({}*iw)", safe_x);
+            let safe_y_expr = format!("({}*ih)", safe_y);
+            let safe_w_expr = format!("({}*iw)", safe_w);
+            let safe_h_expr = format!("({}*ih)", safe_h);
+            let safe_max_x = format!(
+                "max({min},{min}+{sw}-iw/({z}))",
+                min = safe_x_expr,
+                sw = safe_w_expr,
+                z = z_expr
+            );
+            let safe_max_y = format!(
+                "max({min},{min}+{sh}-ih/({z}))",
+                min = safe_y_expr,
+                sh = safe_h_expr,
+                z = z_expr
+            );
+            let x_safe = format!("clip({base},{min},{max})", base = x_expr, min = safe_x_expr, max = safe_max_x);
+            let y_safe = format!("clip({base},{min},{max})", base = y_expr, min = safe_y_expr, max = safe_max_y);
+            let x_expr = format!("({base})+(({safe})-({base}))*({p})", base = x_expr, safe = x_safe, p = p_expr);
+            let y_expr = format!("({base})+(({safe})-({base}))*({p})", base = y_expr, safe = y_safe, p = p_expr);
+            let safe_w_px = evenize(((safe_w * inner_w as f32).round() as i32).max(2));
+            let safe_h_px = evenize(((safe_h * inner_h as f32).round() as i32).max(2));
+            let mut safe_x_px = evenize((safe_x * inner_w as f32).round() as i32);
+            let mut safe_y_px = evenize((safe_y * inner_h as f32).round() as i32);
+            if inner_w > safe_w_px {
+                safe_x_px = safe_x_px.max(0).min(inner_w - safe_w_px);
+            } else {
+                safe_x_px = 0;
+            }
+            if inner_h > safe_h_px {
+                safe_y_px = safe_y_px.max(0).min(inner_h - safe_h_px);
+            } else {
+                safe_y_px = 0;
+            }
             let mut s = format!(
-                "{bg_source}[bg];[0:v]scale={super_w}:{super_h}:force_original_aspect_ratio=decrease,format=rgba,zoompan=z='{z}':x='{x}':y='{y}':d=1:s={target_w}x{target_h}:fps={fps}",
+                "{bg_source}[bg];{bg_comp}[bgc];[0:v]scale={safe_w}:{safe_h}:force_original_aspect_ratio=increase,crop={safe_w}:{safe_h},format=rgba[vid];[bgc][vid]overlay=x={safe_x}:y={safe_y}:shortest=1,format=rgba[comp];[comp]zoompan=z='{z}':x='{x}':y='{y}':d=1:s={inner_w}x{inner_h}:fps={fps}",
+                bg_comp = bg_comp_source,
+                safe_w = safe_w_px,
+                safe_h = safe_h_px,
+                safe_x = safe_x_px,
+                safe_y = safe_y_px,
                 z = z_expr,
                 x = x_expr,
                 y = y_expr,
@@ -718,20 +774,33 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     if !has_camera {
         return base;
     }
-    let mut camera_size = if edit_state.aspect.as_str() == "9:16" {
+    let camera_size = if edit_state.aspect.as_str() == "9:16" {
         evenize((edit_state.camera_size as i32).max(2))
     } else {
         evenize(((inner_w as f32) * 0.10).round() as i32).max(2)
     };
+    let camera_scale_expr = if let Some((_, _, _, p_expr)) = zoom_override.as_ref() {
+        let target = if edit_state.aspect.as_str() == "9:16" { 0.62 } else { 0.7 };
+        format!("(1+({target}-1)*{p})", target = target, p = p_expr)
+    } else {
+        "1".to_string()
+    };
+    let camera_size_expr = format!("round({}*({}))", camera_size, camera_scale_expr);
     let offset = if edit_state.aspect.as_str() == "9:16" { 16 } else { 12 };
-    let (camera_x, camera_y) = match edit_state.camera_position.as_str() {
-        "top_left" => (offset, offset),
-        "top_right" => ((output_w - camera_size - offset).max(0), offset),
-        "bottom_right" => (
-            (output_w - camera_size - offset).max(0),
-            (output_h - camera_size - offset).max(0),
+    let (camera_x_expr, camera_y_expr) = match edit_state.camera_position.as_str() {
+        "top_left" => (format!("{}", offset), format!("{}", offset)),
+        "top_right" => (
+            format!("max(0,{}-({})-{})", output_w, camera_size_expr, offset),
+            format!("{}", offset),
         ),
-        _ => (offset, (output_h - camera_size - offset).max(0)),
+        "bottom_right" => (
+            format!("max(0,{}-({})-{})", output_w, camera_size_expr, offset),
+            format!("max(0,{}-({})-{})", output_h, camera_size_expr, offset),
+        ),
+        _ => (
+            format!("{}", offset),
+            format!("max(0,{}-({})-{})", output_h, camera_size_expr, offset),
+        ),
     };
     let camera_radius = match edit_state.camera_shape.as_str() {
         "circle" => camera_size / 2,
@@ -753,23 +822,33 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     } else {
         camera_base
     };
+    let camera_scaled = format!(
+        "{camera_rounded},scale=round(iw*{scale}):round(ih*{scale}):eval=frame",
+        scale = camera_scale_expr
+    );
     if camera_shadow > 0 {
+        let shadow_x_expr = format!("({})+{}", camera_x_expr, camera_shadow_offset);
+        let shadow_y_expr = format!("({})+{}", camera_y_expr, camera_shadow_offset);
         format!(
-            "{base};{camera_rounded},split=2[cam][camshadow];[camshadow]boxblur={camera_shadow_blur}:1,colorchannelmixer=aa={camera_shadow_alpha}[camshadow];[base][camshadow]overlay=x={shadow_x}:y={shadow_y}:shortest=1{enable_shadow}[bg2];[bg2][cam]overlay=x={camera_x}:y={camera_y}:shortest=1{enable_cam}[v]",
-            shadow_x = camera_x + camera_shadow_offset,
-            shadow_y = camera_y + camera_shadow_offset,
+            "{base};{camera_scaled},split=2[cam][camshadow];[camshadow]boxblur={camera_shadow_blur}:1,colorchannelmixer=aa={camera_shadow_alpha}[camshadow];[base][camshadow]overlay=x={shadow_x}:y={shadow_y}:shortest=1{enable_shadow}[bg2];[bg2][cam]overlay=x={camera_x}:y={camera_y}:shortest=1{enable_cam}[v]",
+            shadow_x = shadow_x_expr,
+            shadow_y = shadow_y_expr,
+            camera_x = camera_x_expr,
+            camera_y = camera_y_expr,
             enable_shadow = camera_enable.as_ref().map(|e| format!(":enable={}", e)).unwrap_or_default(),
             enable_cam = camera_enable.as_ref().map(|e| format!(":enable={}", e)).unwrap_or_default()
         )
     } else {
         format!(
-            "{base};{camera_rounded}[cam];[base][cam]overlay=x={camera_x}:y={camera_y}:shortest=1{enable}[v]",
+            "{base};{camera_scaled}[cam];[base][cam]overlay=x={camera_x}:y={camera_y}:shortest=1{enable}[v]",
+            camera_x = camera_x_expr,
+            camera_y = camera_y_expr,
             enable = camera_enable.as_ref().map(|e| format!(":enable={}", e)).unwrap_or_default()
         )
     }
 }
 
-fn derive_zoom_override(input_path: &str) -> Option<(String, String, String)> {
+fn derive_zoom_override(input_path: &str) -> Option<(String, String, String, String)> {
     let binding = PathBuf::from(input_path);
     let dir = binding.parent()?;
     let path = dir.join("zoom_track.json");
@@ -802,10 +881,14 @@ fn derive_zoom_override(input_path: &str) -> Option<(String, String, String)> {
         }
     }
     let mut z_expr = String::from("1");
+    let mut p_expr = String::from("0");
     for (s, e) in windows.iter() {
-        let up = format!("(1+({mz}-1)*(1-pow(1-((time-{s})/{r} ),3)))", mz = settings.max_zoom, s = s, r = settings.ramp_in_s.max(1e-6));
+        let p_up = format!("(1-pow(1-((time-{s})/{r}),3))", s = s, r = settings.ramp_in_s.max(1e-6));
+        let p_flat = String::from("1");
+        let p_down = format!("(1-pow(1-(({e}-time)/{r}),3))", e = e, r = settings.ramp_out_s.max(1e-6));
+        let up = format!("(1+({mz}-1)*({p}))", mz = settings.max_zoom, p = p_up);
         let flat = format!("{}", settings.max_zoom);
-        let down = format!("(1+({mz}-1)*(1-pow(1-(({e}-time)/{r}),3)))", mz = settings.max_zoom, e = e, r = settings.ramp_out_s.max(1e-6));
+        let down = format!("(1+({mz}-1)*({p}))", mz = settings.max_zoom, p = p_down);
         let expr = format!(
             "if(between(time,{s},{s_up}),{up},if(between(time,{s_up},{e_dn}),{flat},if(between(time,{e_dn},{e}),{down},{fallback})))",
             s = s,
@@ -818,6 +901,18 @@ fn derive_zoom_override(input_path: &str) -> Option<(String, String, String)> {
             fallback = z_expr
         );
         z_expr = expr;
+        let p = format!(
+            "if(between(time,{s},{s_up}),{p_up},if(between(time,{s_up},{e_dn}),{p_flat},if(between(time,{e_dn},{e}),{p_down},{fallback})))",
+            s = s,
+            s_up = s + settings.ramp_in_s,
+            e_dn = e - settings.ramp_out_s,
+            e = e,
+            p_up = p_up,
+            p_flat = p_flat,
+            p_down = p_down,
+            fallback = p_expr
+        );
+        p_expr = p;
     }
     let mut anchors: Vec<(f64, f64)> = Vec::new();
     let mut t_prev = f64::MIN;
@@ -879,7 +974,7 @@ fn derive_zoom_override(input_path: &str) -> Option<(String, String, String)> {
     }
     let x_expr = format!("clip(({ax})*iw - (iw/({z}))/2, 0, iw - iw/({z}))", ax = ax_expr, z = z_expr);
     let y_expr = format!("clip(({ay})*ih - (ih/({z}))/2, 0, ih - ih/({z}))", ay = ay_expr, z = z_expr);
-    Some((z_expr, x_expr, y_expr))
+    Some((z_expr, x_expr, y_expr, p_expr))
 }
 
 fn derive_camera_enable(input_path: &str) -> Option<String> {
@@ -1072,6 +1167,18 @@ fn run_export_job(
     let camera_enable = derive_camera_enable(&job.request.input_path);
     let clip_select = derive_clip_select(&job.request.input_path);
     let filter = build_export_filter(&job.request.edit_state, &job.request.profile, has_camera, zoom_override, camera_enable, clip_select);
+    let filter_path = {
+        let dir = PathBuf::from(&job.request.output_path)
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| env::temp_dir());
+        let path = dir.join(format!("fr_filter_{}.txt", job.job_id));
+        if fs::write(&path, &filter).is_ok() {
+            Some(path)
+        } else {
+            None
+        }
+    };
     let mut args = vec!["-y".to_string(), "-i".to_string(), job.request.input_path.clone()];
     if let Some(path) = camera_path {
         if has_camera {
@@ -1079,9 +1186,15 @@ fn run_export_job(
             args.push(path.to_string());
         }
     }
+    if let Some(path) = filter_path.as_ref() {
+        args.extend([
+            "-filter_complex_script".to_string(),
+            path.to_string_lossy().to_string(),
+        ]);
+    } else {
+        args.extend(["-filter_complex".to_string(), filter]);
+    }
     args.extend([
-        "-filter_complex".to_string(),
-        filter,
         "-map".to_string(),
         "[v]".to_string(),
         "-map".to_string(),
@@ -2069,6 +2182,29 @@ fn ensure_preview(output_path: String) -> Result<String, String> {
     }
 }
 
+fn cursor_path_for_dir(dir: &PathBuf) -> Result<PathBuf, String> {
+    let direct = dir.join("cursor.jsonl");
+    if direct.exists() {
+        return Ok(direct);
+    }
+    let mut found: Option<PathBuf> = None;
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.ends_with("cursor.jsonl"))
+                .unwrap_or(false)
+            {
+                found = Some(p);
+                break;
+            }
+        }
+    }
+    found.ok_or("cursor_events_missing".to_string())
+}
+
 #[tauri::command]
 fn ensure_zoom_track(input_path: String) -> Result<String, String> {
     let dir = PathBuf::from(&input_path)
@@ -2080,29 +2216,7 @@ fn ensure_zoom_track(input_path: String) -> Result<String, String> {
         return Ok(path.to_string_lossy().to_string());
     }
     let meta_path = dir.join("capture.json");
-    let cursor_path = {
-        let direct = dir.join("cursor.jsonl");
-        if direct.exists() {
-            direct
-        } else {
-            let mut found: Option<PathBuf> = None;
-            if let Ok(entries) = fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    let p = entry.path();
-                    if p
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| n.ends_with("cursor.jsonl"))
-                        .unwrap_or(false)
-                    {
-                        found = Some(p);
-                        break;
-                    }
-                }
-            }
-            found.ok_or("cursor_events_missing")?
-        }
-    };
+    let cursor_path = cursor_path_for_dir(&dir)?;
     let capture_meta: CaptureMeta = serde_json::from_str(
         &fs::read_to_string(&meta_path).map_err(|_| "capture_meta_missing")?,
     )
@@ -2282,6 +2396,16 @@ fn ensure_clip_track(input_path: String) -> Result<String, String> {
     fs::write(&path, serde_json::to_string(&track).map_err(|_| "track_serialize_failed")?)
         .map_err(|_| "track_write_failed")?;
     Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn ensure_cursor_track(input_path: String) -> Result<String, String> {
+    let dir = PathBuf::from(&input_path)
+        .parent()
+        .ok_or("invalid_input_path")?
+        .to_path_buf();
+    let cursor_path = cursor_path_for_dir(&dir)?;
+    Ok(cursor_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -2497,6 +2621,7 @@ pub fn run() {
             load_edit_state,
             ensure_preview,
             ensure_zoom_track,
+            ensure_cursor_track,
             save_zoom_track,
             ensure_clip_track,
             save_clip_track,
