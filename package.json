@@ -32,5 +32,9 @@
     "cross-env": "^7.0.3",
     "typescript": "~5.8.3",
     "vite": "^6.2.0"
+  },
+  "optionalDependencies": {
+    "@tailwindcss/oxide-win32-x64-msvc": "^4.2.1",
+    "lightningcss-win32-x64-msvc": "^1.31.1"
   }
 }
