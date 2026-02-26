@@ -54,6 +54,9 @@ type EditState = {
   background_type: string;
   background_preset: number;
   camera_position?: "top_left" | "top_right" | "bottom_left" | "bottom_right";
+  shrink_16_9?: number;
+  shrink_1_1?: number;
+  shrink_9_16?: number;
 };
 
 type ExportStatus = {
@@ -92,6 +95,9 @@ const EditPage = () => {
   const [backgroundType, setBackgroundType] = useState<"gradient" | "wallpaper">("gradient");
   const [backgroundPreset, setBackgroundPreset] = useState(0);
   const [activeTab, setActiveTab] = useState<"camera" | "avatar" | "background" | "frame">("camera");
+  const [shrink169, setShrink169] = useState(0.94);
+  const [shrink11, setShrink11] = useState(0.94);
+  const [shrink916, setShrink916] = useState(0.92);
   const [exportStatus, setExportStatus] = useState<ExportStatus | null>(null);
   const [previewSrc, setPreviewSrc] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -376,6 +382,9 @@ const EditPage = () => {
         setBackgroundType(backgroundValue);
         setBackgroundPreset(state.background_preset);
         setCameraPosition(cameraPosValue);
+        setShrink169(typeof state.shrink_16_9 === "number" ? state.shrink_16_9 : 0.94);
+        setShrink11(typeof state.shrink_1_1 === "number" ? state.shrink_1_1 : 0.94);
+        setShrink916(typeof state.shrink_9_16 === "number" ? state.shrink_9_16 : 0.92);
         hasLoadedRef.current = true;
       })
       .catch(() => {
@@ -470,6 +479,9 @@ const EditPage = () => {
       background_type: backgroundType,
       background_preset: backgroundPreset,
       camera_position: cameraPosition,
+      shrink_16_9: shrink169,
+      shrink_1_1: shrink11,
+      shrink_9_16: shrink916,
     };
     invoke("save_edit_state", { outputPath, editState }).catch(() => null);
   }, [
@@ -486,6 +498,9 @@ const EditPage = () => {
     backgroundType,
     backgroundPreset,
     cameraPosition,
+    shrink169,
+    shrink11,
+    shrink916,
   ]);
 
   useEffect(() => {
@@ -630,7 +645,7 @@ const EditPage = () => {
   const evenize = (n: number) => (n % 2 === 0 ? n : n - 1);
   const previewFrameHeight = evenize(previewBaseHeight);
   const previewFrameWidth = evenize(Math.round(previewFrameHeight * previewAspect));
-  const shrink = editAspect === "9:16" ? 0.92 : 1.0;
+  const shrink = editAspect === "16:9" ? shrink169 : editAspect === "1:1" ? shrink11 : shrink916;
   const exportDisabled =
     !outputPath || exportStatus?.state === "running" || exportStatus?.state === "queued";
   const cameraRadius =
@@ -710,6 +725,9 @@ const EditPage = () => {
       background_type: backgroundType,
       background_preset: backgroundPreset,
       camera_position: cameraPosition,
+      shrink_16_9: shrink169,
+      shrink_1_1: shrink11,
+      shrink_9_16: shrink916,
     };
     try {
       const response = await invoke<{ job_id: string }>("start_export", {
@@ -1503,6 +1521,48 @@ const EditPage = () => {
                       onChange={(event) => setEditShadow(Number(event.target.value))}
                     />
                   </div>
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span>Safe Area 16:9</span>
+                      <span>{Math.round(shrink169 * 100)}%</span>
+                    </div>
+                    <input
+                      className="mt-2 w-full"
+                      type="range"
+                      min={85}
+                      max={99}
+                      value={Math.round(shrink169 * 100)}
+                      onChange={(event) => setShrink169(Number(event.target.value) / 100)}
+                    />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span>Safe Area 1:1</span>
+                      <span>{Math.round(shrink11 * 100)}%</span>
+                    </div>
+                    <input
+                      className="mt-2 w-full"
+                      type="range"
+                      min={85}
+                      max={99}
+                      value={Math.round(shrink11 * 100)}
+                      onChange={(event) => setShrink11(Number(event.target.value) / 100)}
+                    />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span>Safe Area 9:16</span>
+                      <span>{Math.round(shrink916 * 100)}%</span>
+                    </div>
+                    <input
+                      className="mt-2 w-full"
+                      type="range"
+                      min={85}
+                      max={99}
+                      value={Math.round(shrink916 * 100)}
+                      onChange={(event) => setShrink916(Number(event.target.value) / 100)}
+                    />
+                  </div>
                 </div>
               ) : null}
               </div>
@@ -1680,6 +1740,48 @@ const EditPage = () => {
                         max={50}
                         value={editShadow}
                         onChange={(event) => setEditShadow(Number(event.target.value))}
+                      />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span>Safe Area 16:9</span>
+                        <span>{Math.round(shrink169 * 100)}%</span>
+                      </div>
+                      <input
+                        className="mt-2 w-full"
+                        type="range"
+                        min={85}
+                        max={99}
+                        value={Math.round(shrink169 * 100)}
+                        onChange={(event) => setShrink169(Number(event.target.value) / 100)}
+                      />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span>Safe Area 1:1</span>
+                        <span>{Math.round(shrink11 * 100)}%</span>
+                      </div>
+                      <input
+                        className="mt-2 w-full"
+                        type="range"
+                        min={85}
+                        max={99}
+                        value={Math.round(shrink11 * 100)}
+                        onChange={(event) => setShrink11(Number(event.target.value) / 100)}
+                      />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span>Safe Area 9:16</span>
+                        <span>{Math.round(shrink916 * 100)}%</span>
+                      </div>
+                      <input
+                        className="mt-2 w-full"
+                        type="range"
+                        min={85}
+                        max={99}
+                        value={Math.round(shrink916 * 100)}
+                        onChange={(event) => setShrink916(Number(event.target.value) / 100)}
                       />
                     </div>
                   </div>

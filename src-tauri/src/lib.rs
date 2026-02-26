@@ -61,7 +61,17 @@ fn ffmpeg_binary() -> String {
     }
     for p in candidates {
         if p.exists() {
-            return p.to_string_lossy().to_string();
+            let s = p.to_string_lossy().to_string();
+            #[cfg(target_os = "windows")]
+            {
+                if s.len() >= 120 {
+                    let tmp = env::temp_dir().join("fr_ffmpeg.exe");
+                    let _ = fs::create_dir_all(tmp.parent().unwrap_or(&PathBuf::from(".")));
+                    let _ = fs::copy(&p, &tmp);
+                    return tmp.to_string_lossy().to_string();
+                }
+            }
+            return s;
         }
     }
     format!("resources/ffmpeg/{bin_name}")
@@ -135,6 +145,12 @@ struct EditState {
     background_type: String,
     background_preset: u32,
     camera_position: String,
+    #[serde(default)]
+    shrink_16_9: f32,
+    #[serde(default)]
+    shrink_1_1: f32,
+    #[serde(default)]
+    shrink_9_16: f32,
 }
 
 impl Default for EditState {
@@ -152,6 +168,9 @@ impl Default for EditState {
             background_type: "gradient".to_string(),
             background_preset: 0,
             camera_position: "bottom_left".to_string(),
+            shrink_16_9: 0.94,
+            shrink_1_1: 0.94,
+            shrink_9_16: 0.92,
         }
     }
 }
@@ -551,7 +570,12 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     let shadow_alpha = ((shadow as f32) / 120.0).clamp(0.0, 0.6);
     let shadow_offset = (shadow / 6).max(0);
     let bg_source = background_source(edit_state, output_w, output_h, profile.fps);
-    let shrink = if edit_state.aspect == "9:16" { 0.92f32 } else { 1.0f32 };
+    let shrink = match edit_state.aspect.as_str() {
+        "16:9" => edit_state.shrink_16_9.clamp(0.80, 1.0),
+        "1:1" => edit_state.shrink_1_1.clamp(0.80, 1.0),
+        "9:16" => edit_state.shrink_9_16.clamp(0.80, 1.0),
+        _ => 1.0f32,
+    };
     let target_w = evenize(((inner_w as f32) * shrink).round() as i32).max(2);
     let target_h = evenize(((inner_h as f32) * shrink).round() as i32).max(2);
     let super_w = evenize((target_w * 2).max(2));
