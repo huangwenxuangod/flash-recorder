@@ -670,14 +670,38 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     }
     let super_w = evenize((target_w * 2).max(2));
     let super_h = evenize((target_h * 2).max(2));
+    let safe_x = edit_state.safe_x.clamp(0.0, 1.0);
+    let safe_y = edit_state.safe_y.clamp(0.0, 1.0);
+    let safe_w = edit_state.safe_w.clamp(0.0, 1.0);
+    let safe_h = edit_state.safe_h.clamp(0.0, 1.0);
+    let safe_w_px = evenize(((safe_w * inner_w as f32).round() as i32).max(2));
+    let safe_h_px = evenize(((safe_h * inner_h as f32).round() as i32).max(2));
+    let mut safe_x_px = evenize((safe_x * inner_w as f32).round() as i32);
+    let mut safe_y_px = evenize((safe_y * inner_h as f32).round() as i32);
+    if inner_w > safe_w_px {
+        safe_x_px = safe_x_px.max(0).min(inner_w - safe_w_px);
+    } else {
+        safe_x_px = 0;
+    }
+    if inner_h > safe_h_px {
+        safe_y_px = safe_y_px.max(0).min(inner_h - safe_h_px);
+    } else {
+        safe_y_px = 0;
+    }
     let base = if is_portrait_split {
         unreachable!()
     } else if let Some((z_expr, x_expr, y_expr, p_expr)) = zoom_override.as_ref() {
         {
-            let safe_x = edit_state.safe_x.clamp(0.0, 1.0);
-            let safe_y = edit_state.safe_y.clamp(0.0, 1.0);
-            let safe_w = edit_state.safe_w.clamp(0.0, 1.0);
-            let safe_h = edit_state.safe_h.clamp(0.0, 1.0);
+            let mut z_expr = z_expr.to_string();
+            let mut x_expr = x_expr.to_string();
+            let mut y_expr = y_expr.to_string();
+            if edit_state.aspect.as_str() == "9:16" {
+                let base = z_expr.clone();
+                let z_effective = format!("(1+(3-1)*({p}))", p = p_expr);
+                x_expr = format!("(iw/2 - (iw/({}))/2)", z_effective);
+                y_expr = format!("(ih/2 - (ih/({}))/2)", z_effective);
+                z_expr = z_effective;
+            }
             let safe_x_expr = format!("({}*iw)", safe_x);
             let safe_y_expr = format!("({}*ih)", safe_y);
             let safe_w_expr = format!("({}*iw)", safe_w);
@@ -698,20 +722,6 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
             let y_safe = format!("clip({base},{min},{max})", base = y_expr, min = safe_y_expr, max = safe_max_y);
             let x_expr = format!("({base})+(({safe})-({base}))*({p})", base = x_expr, safe = x_safe, p = p_expr);
             let y_expr = format!("({base})+(({safe})-({base}))*({p})", base = y_expr, safe = y_safe, p = p_expr);
-            let safe_w_px = evenize(((safe_w * inner_w as f32).round() as i32).max(2));
-            let safe_h_px = evenize(((safe_h * inner_h as f32).round() as i32).max(2));
-            let mut safe_x_px = evenize((safe_x * inner_w as f32).round() as i32);
-            let mut safe_y_px = evenize((safe_y * inner_h as f32).round() as i32);
-            if inner_w > safe_w_px {
-                safe_x_px = safe_x_px.max(0).min(inner_w - safe_w_px);
-            } else {
-                safe_x_px = 0;
-            }
-            if inner_h > safe_h_px {
-                safe_y_px = safe_y_px.max(0).min(inner_h - safe_h_px);
-            } else {
-                safe_y_px = 0;
-            }
             let mut s = format!(
                 "{bg_source}[bg];{bg_comp}[bgc];[0:v]scale={safe_w}:{safe_h}:force_original_aspect_ratio=increase,crop={safe_w}:{safe_h},format=rgba[vid];[bgc][vid]overlay=x={safe_x}:y={safe_y}:shortest=1,format=rgba[comp];[comp]zoompan=z='{z}':x='{x}':y='{y}':d=1:s={inner_w}x{inner_h}:fps={fps}",
                 bg_comp = bg_comp_source,
@@ -732,7 +742,12 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     } else {
         {
             let mut s = format!(
-                "{bg_source}[bg];[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,format=rgba,fps={fps}",
+                "{bg_source}[bg];{bg_comp}[bgc];[0:v]scale={safe_w}:{safe_h}:force_original_aspect_ratio=increase,crop={safe_w}:{safe_h},format=rgba[vid];[bgc][vid]overlay=x={safe_x}:y={safe_y}:shortest=1,format=rgba,fps={fps}",
+                bg_comp = bg_comp_source,
+                safe_w = safe_w_px,
+                safe_h = safe_h_px,
+                safe_x = safe_x_px,
+                safe_y = safe_y_px,
                 fps = profile.fps
             );
             if let Some(expr) = clip_select.as_ref() {
@@ -775,7 +790,8 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
         return base;
     }
     let camera_size = if edit_state.aspect.as_str() == "9:16" {
-        evenize((edit_state.camera_size as i32).max(2))
+        let base = (edit_state.camera_size as f32).max(2.0);
+        evenize((base * 1.2).round() as i32).max(2)
     } else {
         evenize(((inner_w as f32) * 0.10).round() as i32).max(2)
     };

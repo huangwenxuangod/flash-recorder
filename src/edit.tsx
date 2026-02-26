@@ -374,7 +374,8 @@ const EditPage = () => {
     const frames: ZoomFrame[] = [];
     const rampIn = 0.4;
     const rampOut = 0.4;
-    const ease = (u: number) => 1 + (2 - 1) * (1 - Math.pow(1 - Math.max(0, Math.min(1, u)), 3));
+    const zoomMax = editAspect === "9:16" ? 3.0 : 2.0;
+    const ease = (u: number) => 1 + (zoomMax - 1) * (1 - Math.pow(1 - Math.max(0, Math.min(1, u)), 3));
     let cursorIndex = 0;
     let currentAxn = 0.5;
     let currentAyn = 0.5;
@@ -398,7 +399,7 @@ const EditPage = () => {
             const u = (b.end - t) / Math.max(1e-6, rampOut);
             z = ease(u);
           } else {
-            z = 2.0;
+            z = zoomMax;
           }
           break;
         }
@@ -414,7 +415,7 @@ const EditPage = () => {
       fps,
       frames,
       settings: {
-        max_zoom: 2.0,
+        max_zoom: zoomMax,
         ramp_in_s: rampIn,
         ramp_out_s: rampOut,
         sample_ms: 120,
@@ -1037,6 +1038,9 @@ const EditPage = () => {
       zoomProgressRef.current = easedProgress;
       setZoomProgress(easedProgress);
     }
+    const renderZoom = editAspect === "9:16" ? lerp(1, 3, easedProgress) : z;
+    const renderAxn = editAspect === "9:16" ? 0.5 : axn;
+    const renderAyn = editAspect === "9:16" ? 0.5 : ayn;
     const safeRect = safeRectForAspect();
     const safeX = Math.round(safeRect.x * cw);
     const safeY = Math.round(safeRect.y * ch);
@@ -1073,10 +1077,10 @@ const EditPage = () => {
       srcY = Math.round((vh - srcH) / 2);
     }
     compCtx.drawImage(video, srcX, srcY, srcW, srcH, safeX, safeY, safeW, safeH);
-    const sw = Math.max(1, Math.round(cw / Math.max(1e-6, z)));
-    const sh = Math.max(1, Math.round(ch / Math.max(1e-6, z)));
-    const baseX = safeX + Math.round(axn * safeW - sw / 2);
-    const baseY = safeY + Math.round(ayn * safeH - sh / 2);
+    const sw = Math.max(1, Math.round(cw / Math.max(1e-6, renderZoom)));
+    const sh = Math.max(1, Math.round(ch / Math.max(1e-6, renderZoom)));
+    const baseX = safeX + Math.round(renderAxn * safeW - sw / 2);
+    const baseY = safeY + Math.round(renderAyn * safeH - sh / 2);
     const baseXClamped = clamp(baseX, 0, Math.max(0, cw - sw));
     const baseYClamped = clamp(baseY, 0, Math.max(0, ch - sh));
     const safeMaxX = Math.max(safeX, safeX + safeW - sw);

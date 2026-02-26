@@ -1,5 +1,5 @@
 import { Button, Card, Popover, PopoverTrigger, PopoverContent } from "@heroui/react";
-import { FiChevronLeft, FiSearch, FiLink, FiMenu, FiScissors, FiCamera, FiMic, FiPlay, FiMaximize2, FiUser } from "react-icons/fi";
+import { FiChevronLeft, FiSearch, FiLink, FiMenu, FiScissors, FiCamera, FiMic, FiPlay, FiMaximize2, FiUser, FiBarChart2 } from "react-icons/fi";
 import { useEffect, useRef, useState } from "react";
 
 type TimelineUIProps = {
@@ -274,21 +274,22 @@ const TimelineUI = ({
                     <span>1.00×</span>
                   </div>
                 </div>
-              ) : isSelected ? (
-                <div className="flex items-center space-x-4 text-xs text-white/80">
-                  <div className="flex items-center space-x-1">
-                    <FiMaximize2 size={14} />
-                    <span>2.00×</span>
-                  </div>
-                  <div className="flex items-center space-x-1">
-                    <FiPlay size={14} />
-                    <span>0.70×</span>
-                  </div>
-                  <div className="flex items-center space-x-1">
-                    <span>Follow cursor</span>
-                  </div>
+            ) : (
+              <div className="flex items-center space-x-4 text-xs text-white/80">
+                <div className="flex items-center space-x-1">
+                  <FiMaximize2 size={14} />
+                  <span>2.00×</span>
                 </div>
-              ) : null
+                <div className="flex items-center space-x-1">
+                  <FiPlay size={14} />
+                  <span>0.70×</span>
+                </div>
+                <div className="flex items-center space-x-1">
+                  <FiBarChart2 size={14} />
+                  <span>Zoom 曲线</span>
+                </div>
+              </div>
+            )
             ) : null}
           </div>
         </div>
