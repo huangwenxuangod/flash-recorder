@@ -200,6 +200,22 @@ function MainApp() {
     label: resolutionLabel(value),
   }));
 
+  const ellipsizePath = (p: string) => {
+    if (!p) return "";
+    if (p.length <= 40) return p;
+    const sep = p.includes("\\") ? "\\" : "/";
+    const parts = p.split(sep).filter((s) => s.length > 0);
+    if (parts.length <= 3) {
+      const head = p.slice(0, 18);
+      const tail = p.slice(-18);
+      return `${head}...${tail}`;
+    }
+    const left = parts.slice(0, 2).join(sep);
+    const right = parts.slice(-2).join(sep);
+    const prefix = p.startsWith(sep) ? sep : "";
+    return `${prefix}${left}${sep}...${sep}${right}`;
+  };
+
   const updateAwaitingRegion = (value: boolean) => {
     awaitingRegionRef.current = value;
   };
@@ -581,7 +597,7 @@ function MainApp() {
                         <span className="flex items-center gap-3">
                           <FiFolder className="text-slate-500" />
                           <span className="text-sm font-medium text-slate-100">
-                            {settings.exportDir || defaultExportDir || "recordings"}
+                            {ellipsizePath(settings.exportDir || defaultExportDir || "recordings")}
                           </span>
                         </span>
                         <span className="text-xs text-slate-400">选择</span>

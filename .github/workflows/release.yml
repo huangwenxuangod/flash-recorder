@@ -52,22 +52,8 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Prepare ffmpeg for bundling
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force "src-tauri/ffmpeg" | Out-Null
-          $zipUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-          Invoke-WebRequest -Uri $zipUrl -OutFile "ffmpeg.zip"
-          Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg_zip" -Force
-          $ff = Get-ChildItem -Path "ffmpeg_zip" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
-          Copy-Item $ff.FullName "src-tauri/ffmpeg/ffmpeg.exe" -Force
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Build Tauri (Windows)
-        run: pnpm run tauri build
-
       - name: Prepare self-signed certificate
         shell: pwsh
         timeout-minutes: 3
@@ -82,14 +68,34 @@ jobs:
           Export-Certificate -Cert $cert -FilePath $cerPath -ErrorAction Stop
           try {
             Import-Certificate -FilePath $cerPath -CertStoreLocation Cert:\CurrentUser\TrustedPublisher -ErrorAction Stop
-            Write-Host "TrustedPublisher certificate imported successfully"
           } catch {
-            Write-Warning ("TrustedPublisher import failed (non-critical): " + $_)
           }
           echo "PFX_FILE=$pfxPath" >> $env:GITHUB_ENV
           echo "PFX_PASSWORD=$pass" >> $env:GITHUB_ENV
-          echo "SIGN_MODE=selfsigned" >> $env:GITHUB_ENV
-          Write-Host ("Using Self-signed certificate. Thumbprint: " + $cert.Thumbprint)
+      - name: Ensure ffmpeg resource
+        shell: pwsh
+        run: |
+          if (!(Test-Path "src-tauri\ffmpeg\ffmpeg.exe")) {
+            New-Item -ItemType Directory -Force "src-tauri\ffmpeg" | Out-Null
+            $zipUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+            $zipPath = "ffmpeg.zip"
+            Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+            Expand-Archive -Path $zipPath -DestinationPath "ffmpeg_zip" -Force
+            $ff = Get-ChildItem -Path "ffmpeg_zip" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+            if ($null -eq $ff) { throw "ffmpeg.exe not found in downloaded archive" }
+            Copy-Item $ff.FullName "src-tauri\ffmpeg\ffmpeg.exe" -Force
+          }
+      - name: Sign ffmpeg resources
+        shell: pwsh
+        run: |
+          $tool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter "signtool.exe" | Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } | Select-Object -First 1
+          if ($null -eq $tool) { throw "signtool.exe not found" }
+          Get-ChildItem -Recurse -File 'src-tauri\ffmpeg' -Include *.exe | ForEach-Object {
+            & $tool.FullName sign /f "$env:PFX_FILE" /p "$env:PFX_PASSWORD" /fd sha256 /tr "http://timestamp.digicert.com" /td sha256 "$($_.FullName)"
+          }
+      - name: Build Tauri (Windows)
+        run: pnpm run tauri build
+
 
       - name: Locate signtool.exe
         shell: pwsh

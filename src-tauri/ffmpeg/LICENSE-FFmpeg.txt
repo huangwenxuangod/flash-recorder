@@ -1,0 +1,23 @@
+This distribution bundles the FFmpeg executable for convenience.
+
+FFmpeg Licensing Summary:
+- FFmpeg is licensed under the GNU Lesser General Public License (LGPL) version 2.1 or later.
+- When built with --enable-gpl (as this binary is), FFmpeg is licensed under the GNU General Public License (GPL).
+- See https://ffmpeg.org/legal.html for authoritative information.
+
+License Text References:
+- GNU GPLv3: https://www.gnu.org/licenses/gpl-3.0.txt
+- GNU LGPLv2.1: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+
+Attribution:
+- FFmpeg Copyright (c) 2000–present Fabrice Bellard and the FFmpeg developers.
+- FFmpeg includes third-party libraries; their licenses are acknowledged by FFmpeg and remain applicable.
+
+Source Code:
+- FFmpeg source code is available at https://ffmpeg.org/.
+- For the specific build used here, refer to the build provider’s source disclosure or obtain the source from FFmpeg upstream.
+
+Notes:
+- This application invokes FFmpeg as an external tool; it is not linked to FFmpeg libraries.
+- The presence of GPL-enabled features in the FFmpeg binary applies to the FFmpeg binary itself.
+

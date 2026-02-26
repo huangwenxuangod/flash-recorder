@@ -15,6 +15,9 @@ dist-ssr
 .pnpm-cache
 .rustup-msvc
 .cargo-msvc
+ 
+# App resources
+src-tauri/ffmpeg/ffmpeg.exe
 
 # Editor directories and files
 .vscode/*

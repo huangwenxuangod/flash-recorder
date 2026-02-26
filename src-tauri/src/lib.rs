@@ -42,32 +42,29 @@ fn new_cmd(bin: &str) -> Command {
 }
 
 fn ffmpeg_binary() -> String {
-    if let Ok(status) = new_cmd("ffmpeg")
-        .args(["-version"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-    {
-        if status.success() {
-            return "ffmpeg".to_string();
-        }
-    }
+    let bin_name = if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" };
+    let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(exe_path) = env::current_exe() {
         if let Some(dir) = exe_path.parent() {
-            let bin_name = if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" };
-            let candidates = [
-                dir.join("resources").join("ffmpeg").join(&bin_name),
-                dir.join("ffmpeg").join(&bin_name),
-                dir.join(&bin_name),
-            ];
-            for candidate in candidates {
-                if candidate.exists() {
-                    return candidate.to_string_lossy().to_string();
-                }
+            candidates.push(dir.join("resources").join("ffmpeg").join(&bin_name));
+        }
+        for anc in exe_path.ancestors() {
+            if anc.file_name().and_then(|n| n.to_str()) == Some("src-tauri") {
+                candidates.push(PathBuf::from(anc).join("ffmpeg").join(&bin_name));
+                break;
             }
         }
     }
-    "ffmpeg".to_string()
+    if let Ok(cwd) = env::current_dir() {
+        candidates.push(cwd.join("src-tauri").join("ffmpeg").join(&bin_name));
+        candidates.push(cwd.join("ffmpeg").join(&bin_name));
+    }
+    for p in candidates {
+        if p.exists() {
+            return p.to_string_lossy().to_string();
+        }
+    }
+    format!("resources/ffmpeg/{bin_name}")
 }
 
 #[derive(Deserialize)]
@@ -286,7 +283,7 @@ impl Default for ZoomSettings {
             ramp_in_s: 0.5,
             ramp_out_s: 0.5,
             sample_ms: 120,
-            follow_threshold_px: 80.0,
+            follow_threshold_px: 160.0,
         }
     }
 }
@@ -958,12 +955,13 @@ fn run_export_job(
         "-nostats".to_string(),
         job.request.output_path.clone(),
     ]);
-    let mut child = new_cmd(&ffmpeg_binary())
+    let bin = ffmpeg_binary();
+    let mut child = new_cmd(&bin)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|_| "ffmpeg_not_found".to_string())?;
+        .map_err(|e| format!("ffmpeg_not_found: {} (bin={})", e.to_string(), bin))?;
     let stdout = child
         .stdout
         .take()
@@ -1423,13 +1421,15 @@ fn start_recording(
 
     let log_file = fs::File::create(&log_path).map_err(|e| log_error(e.to_string()))?;
 
-    let child = new_cmd(&ffmpeg_binary())
+    let bin = ffmpeg_binary()
+        ;
+    let child = new_cmd(&bin)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::from(log_file))
         .spawn()
-        .map_err(|_| log_error("ffmpeg_not_found".to_string()))?;
+        .map_err(|e| log_error(format!("ffmpeg_not_found: {} (bin={})", e.to_string(), bin)))?;
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     {
@@ -1635,7 +1635,8 @@ fn list_audio_devices() -> Result<Vec<String>, String> {
 }
 
 fn list_audio_devices_internal() -> Result<Vec<String>, String> {
-    let (stderr_output, stdout_output) = new_cmd(&ffmpeg_binary())
+    let bin = ffmpeg_binary();
+    let (stderr_output, stdout_output) = new_cmd(&bin)
         .args(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1655,7 +1656,7 @@ fn list_audio_devices_internal() -> Result<Vec<String>, String> {
             let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
             Ok((stderr, stdout))
         })
-        .map_err(|_| "ffmpeg_not_found".to_string())?;
+        .map_err(|e| format!("ffmpeg_not_found: {} (bin={})", e.to_string(), bin))?;
 
     let combined = format!("{stderr_output}\n{stdout_output}");
     Ok(parse_dshow_audio_devices(&combined))
@@ -1720,7 +1721,8 @@ fn list_windows() -> Result<Vec<String>, String> {
 }
 
 fn list_video_devices_internal() -> Result<Vec<String>, String> {
-    let (stderr_output, stdout_output) = new_cmd(&ffmpeg_binary())
+    let bin = ffmpeg_binary();
+    let (stderr_output, stdout_output) = new_cmd(&bin)
         .args(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1740,7 +1742,7 @@ fn list_video_devices_internal() -> Result<Vec<String>, String> {
             let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
             Ok((stderr, stdout))
         })
-        .map_err(|_| "ffmpeg_not_found".to_string())?;
+        .map_err(|e| format!("ffmpeg_not_found: {} (bin={})", e.to_string(), bin))?;
 
     let combined = format!("{stderr_output}\n{stdout_output}");
     Ok(parse_dshow_video_devices(&combined))
@@ -1832,7 +1834,8 @@ fn ensure_preview(output_path: String) -> Result<String, String> {
     if preview.exists() {
         return Ok(preview.to_string_lossy().to_string());
     }
-    let status = new_cmd(&ffmpeg_binary())
+    let bin = ffmpeg_binary();
+    let status = new_cmd(&bin)
         .args([
             "-y",
             "-i",
@@ -1851,7 +1854,7 @@ fn ensure_preview(output_path: String) -> Result<String, String> {
             preview.to_string_lossy().as_ref(),
         ])
         .status()
-        .map_err(|_| "ffmpeg_not_found".to_string())?;
+        .map_err(|e| format!("ffmpeg_not_found: {} (bin={})", e.to_string(), bin))?;
     if status.success() {
         Ok(preview.to_string_lossy().to_string())
     } else {
@@ -1963,7 +1966,7 @@ fn ensure_zoom_track(input_path: String) -> Result<String, String> {
                 path_px += (dx * dx + dy * dy).sqrt();
                 last_axn = ev.axn;
                 last_ayn = ev.ayn;
-                if follow_start_ms.is_none() && path_px >= 80.0 {
+                if follow_start_ms.is_none() && path_px >= 160.0 {
                     follow_start_ms = Some(ev.offset_ms);
                     follow_start_axn = ev.axn;
                     follow_start_ayn = ev.ayn;
