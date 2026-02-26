@@ -151,6 +151,28 @@ struct EditState {
     shrink_1_1: f32,
     #[serde(default)]
     shrink_9_16: f32,
+    #[serde(default)]
+    portrait_split: bool,
+    #[serde(default)]
+    portrait_bottom_ratio: f32,
+    #[serde(default)]
+    mode_16_9: String,
+    #[serde(default)]
+    mode_1_1: String,
+    #[serde(default)]
+    mode_9_16: String,
+    #[serde(default)]
+    title_safe_16_9: f32,
+    #[serde(default)]
+    subtitle_safe_16_9: f32,
+    #[serde(default)]
+    title_safe_1_1: f32,
+    #[serde(default)]
+    subtitle_safe_1_1: f32,
+    #[serde(default)]
+    title_safe_9_16: f32,
+    #[serde(default)]
+    subtitle_safe_9_16: f32,
 }
 
 impl Default for EditState {
@@ -171,6 +193,17 @@ impl Default for EditState {
             shrink_16_9: 0.94,
             shrink_1_1: 0.94,
             shrink_9_16: 0.92,
+            portrait_split: true,
+            portrait_bottom_ratio: 0.36,
+            mode_16_9: "shrink".to_string(),
+            mode_1_1: "shrink".to_string(),
+            mode_9_16: "split".to_string(),
+            title_safe_16_9: 0.08,
+            subtitle_safe_16_9: 0.10,
+            title_safe_1_1: 0.06,
+            subtitle_safe_1_1: 0.12,
+            title_safe_9_16: 0.08,
+            subtitle_safe_9_16: 0.10,
         }
     }
 }
@@ -570,17 +603,27 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     let shadow_alpha = ((shadow as f32) / 120.0).clamp(0.0, 0.6);
     let shadow_offset = (shadow / 6).max(0);
     let bg_source = background_source(edit_state, output_w, output_h, profile.fps);
-    let shrink = match edit_state.aspect.as_str() {
-        "16:9" => edit_state.shrink_16_9.clamp(0.80, 1.0),
-        "1:1" => edit_state.shrink_1_1.clamp(0.80, 1.0),
-        "9:16" => edit_state.shrink_9_16.clamp(0.80, 1.0),
-        _ => 1.0f32,
-    };
-    let target_w = evenize(((inner_w as f32) * shrink).round() as i32).max(2);
-    let target_h = evenize(((inner_h as f32) * shrink).round() as i32).max(2);
+    let is_portrait_split = false;
+    let margin_lr_169 = 0.06f32;
+    let margin_tb_916 = 0.36f32;
+    let margin_tb_11 = 0.24f32;
+    let mut target_w = inner_w.max(2);
+    let mut target_h = inner_h.max(2);
+    if edit_state.aspect.as_str() == "16:9" {
+        target_w = evenize(((inner_w as f32) * (1.0 - margin_lr_169)).round() as i32).max(2);
+        target_h = inner_h.max(2);
+    } else if edit_state.aspect.as_str() == "1:1" {
+        target_w = inner_w.max(2);
+        target_h = evenize(((inner_h as f32) * (1.0 - margin_tb_11)).round() as i32).max(2);
+    } else if edit_state.aspect.as_str() == "9:16" {
+        target_w = inner_w.max(2);
+        target_h = evenize(((inner_h as f32) * (1.0 - margin_tb_916)).round() as i32).max(2);
+    }
     let super_w = evenize((target_w * 2).max(2));
     let super_h = evenize((target_h * 2).max(2));
-    let base = if let Some((z_expr, x_expr, y_expr)) = zoom_override.as_ref() {
+    let base = if is_portrait_split {
+        unreachable!()
+    } else if let Some((z_expr, x_expr, y_expr)) = zoom_override.as_ref() {
         format!(
             "{bg_source}[bg];[0:v]scale={super_w}:{super_h}:force_original_aspect_ratio=decrease,format=rgba,zoompan=z='{z}':x='{x}':y='{y}':d=1:s={target_w}x{target_h}:fps={fps}",
             z = z_expr,
@@ -590,7 +633,7 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
         )
     } else {
         format!(
-            "{bg_source}[bg];[0:v]scale={super_w}:{super_h}:force_original_aspect_ratio=decrease,format=rgba,zoompan=z='1':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={target_w}x{target_h}:fps={fps}",
+            "{bg_source}[bg];[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,format=rgba,fps={fps}",
             fps = profile.fps
         )
     };
@@ -627,15 +670,12 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     if !has_camera {
         return base;
     }
-    let baseline_w = match edit_state.aspect.as_str() {
-        "16:9" => 420,
-        "1:1" => 236,
-        "9:16" => 132,
-        _ => 420,
+    let mut camera_size = if edit_state.aspect.as_str() == "9:16" {
+        evenize((edit_state.camera_size as i32).max(2))
+    } else {
+        evenize(((inner_w as f32) * 0.10).round() as i32).max(2)
     };
-    let scale_w = ((output_w as f32) / (baseline_w as f32)) * 0.60;
-    let mut camera_size = evenize(((edit_state.camera_size as f32) * scale_w).round() as i32).max(2);
-    let offset = evenize((12.0 * scale_w).round() as i32).max(0);
+    let offset = if edit_state.aspect.as_str() == "9:16" { 16 } else { 12 };
     let (camera_x, camera_y) = match edit_state.camera_position.as_str() {
         "top_left" => (offset, offset),
         "top_right" => ((output_w - camera_size - offset).max(0), offset),
@@ -647,8 +687,8 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     };
     let camera_radius = match edit_state.camera_shape.as_str() {
         "circle" => camera_size / 2,
-        "rounded" => evenize((18.0 * scale_w).round() as i32).max(0),
-        _ => evenize((6.0 * scale_w).round() as i32).max(0),
+        "rounded" => evenize((inner_w / 24).max(4)),
+        _ => evenize((inner_w / 64).max(2)),
     }
     .min(camera_size / 2);
     let camera_shadow = edit_state.camera_shadow as i32;

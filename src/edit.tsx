@@ -57,6 +57,8 @@ type EditState = {
   shrink_16_9?: number;
   shrink_1_1?: number;
   shrink_9_16?: number;
+  portrait_split?: boolean;
+  portrait_bottom_ratio?: number;
 };
 
 type ExportStatus = {
@@ -95,9 +97,6 @@ const EditPage = () => {
   const [backgroundType, setBackgroundType] = useState<"gradient" | "wallpaper">("gradient");
   const [backgroundPreset, setBackgroundPreset] = useState(0);
   const [activeTab, setActiveTab] = useState<"camera" | "avatar" | "background" | "frame">("camera");
-  const [shrink169, setShrink169] = useState(0.94);
-  const [shrink11, setShrink11] = useState(0.94);
-  const [shrink916, setShrink916] = useState(0.92);
   const [exportStatus, setExportStatus] = useState<ExportStatus | null>(null);
   const [previewSrc, setPreviewSrc] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -374,7 +373,11 @@ const EditPage = () => {
         setEditPadding(state.padding);
         setEditRadius(state.radius);
         setEditShadow(state.shadow);
-        setCameraSize(state.camera_size);
+        setCameraSize(
+          aspect === "9:16"
+            ? (typeof state.camera_size === "number" && state.camera_size > 0 ? state.camera_size : 84)
+            : state.camera_size
+        );
         setCameraShape(cameraShapeValue);
         setCameraShadow(state.camera_shadow);
         setCameraMirror(state.camera_mirror);
@@ -382,9 +385,6 @@ const EditPage = () => {
         setBackgroundType(backgroundValue);
         setBackgroundPreset(state.background_preset);
         setCameraPosition(cameraPosValue);
-        setShrink169(typeof state.shrink_16_9 === "number" ? state.shrink_16_9 : 0.94);
-        setShrink11(typeof state.shrink_1_1 === "number" ? state.shrink_1_1 : 0.94);
-        setShrink916(typeof state.shrink_9_16 === "number" ? state.shrink_9_16 : 0.92);
         hasLoadedRef.current = true;
       })
       .catch(() => {
@@ -392,6 +392,11 @@ const EditPage = () => {
       });
   }, [outputPath]);
 
+  useEffect(() => {
+    if (editAspect === "9:16" && cameraSize === 168) {
+      setCameraSize(84);
+    }
+  }, [editAspect]);
   useEffect(() => {
     const video = previewVideoRef.current;
     if (!video) {
@@ -479,9 +484,6 @@ const EditPage = () => {
       background_type: backgroundType,
       background_preset: backgroundPreset,
       camera_position: cameraPosition,
-      shrink_16_9: shrink169,
-      shrink_1_1: shrink11,
-      shrink_9_16: shrink916,
     };
     invoke("save_edit_state", { outputPath, editState }).catch(() => null);
   }, [
@@ -498,9 +500,6 @@ const EditPage = () => {
     backgroundType,
     backgroundPreset,
     cameraPosition,
-    shrink169,
-    shrink11,
-    shrink916,
   ]);
 
   useEffect(() => {
@@ -645,7 +644,9 @@ const EditPage = () => {
   const evenize = (n: number) => (n % 2 === 0 ? n : n - 1);
   const previewFrameHeight = evenize(previewBaseHeight);
   const previewFrameWidth = evenize(Math.round(previewFrameHeight * previewAspect));
-  const shrink = editAspect === "16:9" ? shrink169 : editAspect === "1:1" ? shrink11 : shrink916;
+  const MARGIN_LR_169 = 0.06;
+  const MARGIN_TB_916 = 0.36;
+  const MARGIN_TB_11 = 0.24;
   const exportDisabled =
     !outputPath || exportStatus?.state === "running" || exportStatus?.state === "queued";
   const cameraRadius =
@@ -725,9 +726,6 @@ const EditPage = () => {
       background_type: backgroundType,
       background_preset: backgroundPreset,
       camera_position: cameraPosition,
-      shrink_16_9: shrink169,
-      shrink_1_1: shrink11,
-      shrink_9_16: shrink916,
     };
     try {
       const response = await invoke<{ job_id: string }>("start_export", {
@@ -870,48 +868,36 @@ const EditPage = () => {
     const vw = Math.max(1, video.videoWidth || 0);
     const vh = Math.max(1, video.videoHeight || 0);
     if (!vw || !vh || !Number.isFinite(video.currentTime)) return;
-    const tMs = Math.round((video.currentTime || 0) * 1000);
-    let frame = sampleZoom(tMs);
-    const rt = realtimeFrameRef.current;
-    if (rt && Math.abs(rt.time_ms - tMs) <= 200) {
-      frame = rt;
-    }
-    const dx = Math.round(cw * shrink);
-    const dy = Math.round(ch * shrink);
-    const destX = Math.round((cw - dx) / 2);
-    const destY = Math.round((ch - dy) / 2);
-    if (!frame) {
-      const va = vw / vh;
-      const ra = dx / dy;
-      const dw = ra > va ? Math.round(dy * va) : dx;
-      const dh = ra > va ? dy : Math.round(dx / va);
-      const offX = destX + Math.round((dx - dw) / 2);
-      const offY = destY + Math.round((dy - dh) / 2);
-      ctx.drawImage(video, 0, 0, vw, vh, offX, offY, dw, dh);
-      return;
-    }
-    const z = Math.max(1, Math.min(4, frame.zoom || 1));
-    const maxStep = 0.06;
-    const prevAxn = smoothAxnRef.current ?? frame.axn;
-    const prevAyn = smoothAynRef.current ?? frame.ayn;
-    const dxn = frame.axn - prevAxn;
-    const dyn = frame.ayn - prevAyn;
-    const len = Math.hypot(dxn, dyn);
-    if (len > maxStep) {
-      const s = maxStep / (len || 1);
-      smoothAxnRef.current = prevAxn + dxn * s;
-      smoothAynRef.current = prevAyn + dyn * s;
+    // no-op: keep full page ratio without zoom tracking
+    let dx = cw;
+    let dy = ch;
+    let destX = 0;
+    let destY = 0;
+    if (editAspect === "16:9") {
+      dx = Math.round(cw * (1 - MARGIN_LR_169));
+      dy = ch;
+      destX = Math.round((cw - dx) / 2);
+      destY = 0;
+    } else if (editAspect === "1:1") {
+      dx = cw;
+      dy = evenize(Math.round(ch * (1 - MARGIN_TB_11)));
+      destX = 0;
+      destY = Math.round((ch - dy) / 2);
     } else {
-      smoothAxnRef.current = frame.axn;
-      smoothAynRef.current = frame.ayn;
+      dx = cw;
+      dy = evenize(Math.round(ch * (1 - MARGIN_TB_916)));
+      destX = 0;
+      destY = Math.round((ch - dy) / 2);
     }
-    const axn2 = smoothAxnRef.current ?? frame.axn;
-    const ayn2 = smoothAynRef.current ?? frame.ayn;
-    const sw = Math.round(vw / z);
-    const sh = Math.round(vh / z);
-    const px = Math.round(Math.min(Math.max(axn2 * vw - sw / 2, 0), vw - sw));
-    const py = Math.round(Math.min(Math.max(ayn2 * vh - sh / 2, 0), vh - sh));
-    ctx.drawImage(video, px, py, sw, sh, destX, destY, dx, dy);
+    const rr = dx / dy;
+    const srcAspect = vw / vh;
+    // contain + letterbox: scale source to fit inside dx x dy without cropping
+    const dw = srcAspect >= rr ? dx : Math.round(dy * srcAspect);
+    const dh = srcAspect >= rr ? Math.round(dx / srcAspect) : dy;
+    const ox = destX + Math.round((dx - dw) / 2);
+    const oy = destY + Math.round((dy - dh) / 2);
+    ctx.drawImage(video, ox, oy, dw, dh);
+    return;
   };
   useEffect(() => {
     if (previewPlaying) {
@@ -933,10 +919,10 @@ const EditPage = () => {
         rafRef.current = null;
       }
     }
-  }, [previewPlaying, zoomTrack, shrink, previewFrameWidth, previewFrameHeight]);
+  }, [previewPlaying, zoomTrack, previewFrameWidth, previewFrameHeight]);
   useEffect(() => {
     drawCanvas();
-  }, [previewTime, zoomTrack, shrink, previewFrameWidth, previewFrameHeight]);
+  }, [previewTime, zoomTrack, previewFrameWidth, previewFrameHeight]);
   const previewSurface = previewSrc ? (
     <>
       <video
@@ -1033,14 +1019,13 @@ const EditPage = () => {
                     height: evenize(cameraSize),
                     borderRadius: cameraRadius,
                     boxShadow: `0 16px 40px rgba(0,0,0,${cameraShadow / 120}), 0 0 0 1px rgba(255,255,255,0.1), inset 0 1px 0 rgba(255,255,255,0.25)`,
-                    transformOrigin:
-                      cameraPosition === "top_left"
+                    transformOrigin: (cameraPosition === "top_left"
                         ? "top left"
                         : cameraPosition === "top_right"
                         ? "top right"
                         : cameraPosition === "bottom_right"
                         ? "bottom right"
-                        : "bottom left",
+                        : "bottom left"),
                     background: cameraBlur ? "rgba(15, 23, 42, 0.25)" : "rgba(15, 23, 42, 0.18)",
                     backdropFilter: cameraBlur ? "blur(18px) saturate(140%)" : "blur(10px)",
                     ...(cameraPosition === "top_left"
@@ -1049,7 +1034,7 @@ const EditPage = () => {
                       ? { top: 12, right: 12 }
                       : cameraPosition === "bottom_right"
                       ? { bottom: 12, right: 12 }
-                      : { bottom: 12, left: 12 }),
+                      : { bottom: editAspect === "9:16" ? 16 : 12, left: editAspect === "9:16" ? 16 : 12 }),
                   }}
                   animate={{ scale: avatarScale, scaleX: cameraMirror ? -1 : 1 }}
                   transition={{ duration: 0.5, ease: [0.215, 0.61, 0.355, 1] }}
@@ -1357,10 +1342,10 @@ const EditPage = () => {
                     <input
                       className="mt-2 w-full"
                       type="range"
-                      min={120}
-                      max={320}
+                      min={editAspect === "9:16" ? 84 : 120}
+                      max={editAspect === "9:16" ? 296 : 320}
                       step={2}
-                      value={cameraSize}
+                      value={Math.max(editAspect === "9:16" ? 84 : 120, cameraSize)}
                       onChange={(event) => setCameraSize(Number(event.target.value))}
                     />
                   </div>
@@ -1510,7 +1495,7 @@ const EditPage = () => {
                   <div>
                     <div className="flex items-center justify-between">
                       <span>Shadow</span>
-                      <span>{editShadow}%</span>
+                      <span>{editShadow}</span>
                     </div>
                     <input
                       className="mt-2 w-full"
@@ -1519,48 +1504,6 @@ const EditPage = () => {
                       max={50}
                       value={editShadow}
                       onChange={(event) => setEditShadow(Number(event.target.value))}
-                    />
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <span>Safe Area 16:9</span>
-                      <span>{Math.round(shrink169 * 100)}%</span>
-                    </div>
-                    <input
-                      className="mt-2 w-full"
-                      type="range"
-                      min={85}
-                      max={99}
-                      value={Math.round(shrink169 * 100)}
-                      onChange={(event) => setShrink169(Number(event.target.value) / 100)}
-                    />
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <span>Safe Area 1:1</span>
-                      <span>{Math.round(shrink11 * 100)}%</span>
-                    </div>
-                    <input
-                      className="mt-2 w-full"
-                      type="range"
-                      min={85}
-                      max={99}
-                      value={Math.round(shrink11 * 100)}
-                      onChange={(event) => setShrink11(Number(event.target.value) / 100)}
-                    />
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <span>Safe Area 9:16</span>
-                      <span>{Math.round(shrink916 * 100)}%</span>
-                    </div>
-                    <input
-                      className="mt-2 w-full"
-                      type="range"
-                      min={85}
-                      max={99}
-                      value={Math.round(shrink916 * 100)}
-                      onChange={(event) => setShrink916(Number(event.target.value) / 100)}
                     />
                   </div>
                 </div>
@@ -1744,45 +1687,22 @@ const EditPage = () => {
                     </div>
                     <div>
                       <div className="flex items-center justify-between">
-                        <span>Safe Area 16:9</span>
-                        <span>{Math.round(shrink169 * 100)}%</span>
+                        <span>16:9 左右边距固定 6%</span>
                       </div>
-                      <input
-                        className="mt-2 w-full"
-                        type="range"
-                        min={85}
-                        max={99}
-                        value={Math.round(shrink169 * 100)}
-                        onChange={(event) => setShrink169(Number(event.target.value) / 100)}
-                      />
+                      <div className="mt-2 text-slate-400">与竞品一致的左右留边</div>
                     </div>
                     <div>
                       <div className="flex items-center justify-between">
-                        <span>Safe Area 1:1</span>
-                        <span>{Math.round(shrink11 * 100)}%</span>
+                        <span>1:1 上下边距固定 24%</span>
                       </div>
-                      <input
-                        className="mt-2 w-full"
-                        type="range"
-                        min={85}
-                        max={99}
-                        value={Math.round(shrink11 * 100)}
-                        onChange={(event) => setShrink11(Number(event.target.value) / 100)}
-                      />
+                      <div className="mt-2 text-slate-400">保持原画面比例，垂直留边</div>
                     </div>
                     <div>
                       <div className="flex items-center justify-between">
                         <span>Safe Area 9:16</span>
-                        <span>{Math.round(shrink916 * 100)}%</span>
+                        <span>固定 36%</span>
                       </div>
-                      <input
-                        className="mt-2 w-full"
-                        type="range"
-                        min={85}
-                        max={99}
-                        value={Math.round(shrink916 * 100)}
-                        onChange={(event) => setShrink916(Number(event.target.value) / 100)}
-                      />
+                      <div className="mt-2 text-slate-400">9:16 上下边距固定 36%</div>
                     </div>
                   </div>
                 ) : null}
