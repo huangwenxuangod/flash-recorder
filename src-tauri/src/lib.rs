@@ -348,6 +348,42 @@ struct ZoomTrack {
     settings: Option<ZoomSettings>,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+struct ClipSegment {
+    start_s: f64,
+    end_s: f64,
+    #[serde(default)]
+    speed: Option<f32>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct ClipTrack {
+    segments: Vec<ClipSegment>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct CameraSegment {
+    start_s: f64,
+    end_s: f64,
+    #[serde(default)]
+    visible: bool,
+    #[serde(default)]
+    size_px: Option<u32>,
+    #[serde(default)]
+    position: Option<String>,
+    #[serde(default)]
+    mirror: Option<bool>,
+    #[serde(default)]
+    blur: Option<bool>,
+    #[serde(default)]
+    shape: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct CameraTrack {
+    segments: Vec<CameraSegment>,
+}
+
 fn write_error_log(output_dir: &PathBuf, message: &str) {
     if let Ok(mut file) = fs::OpenOptions::new()
         .create(true)
@@ -578,7 +614,7 @@ fn rounded_alpha_expr(radius: i32) -> String {
     )
 }
 
-fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_camera: bool, zoom_override: Option<(String, String, String)>) -> String {
+fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_camera: bool, zoom_override: Option<(String, String, String)>, camera_enable: Option<String>, clip_select: Option<String>) -> String {
     let output_w = profile.width as i32;
     let output_h = profile.height as i32;
     let aspect = aspect_ratio(&edit_state.aspect);
@@ -624,18 +660,30 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     let base = if is_portrait_split {
         unreachable!()
     } else if let Some((z_expr, x_expr, y_expr)) = zoom_override.as_ref() {
-        format!(
-            "{bg_source}[bg];[0:v]scale={super_w}:{super_h}:force_original_aspect_ratio=decrease,format=rgba,zoompan=z='{z}':x='{x}':y='{y}':d=1:s={target_w}x{target_h}:fps={fps}",
-            z = z_expr,
-            x = x_expr,
-            y = y_expr,
-            fps = profile.fps
-        )
+        {
+            let mut s = format!(
+                "{bg_source}[bg];[0:v]scale={super_w}:{super_h}:force_original_aspect_ratio=decrease,format=rgba,zoompan=z='{z}':x='{x}':y='{y}':d=1:s={target_w}x{target_h}:fps={fps}",
+                z = z_expr,
+                x = x_expr,
+                y = y_expr,
+                fps = profile.fps
+            );
+            if let Some(expr) = clip_select.as_ref() {
+                s = format!("{},select='{}',setpts=N/({}*TB)", s, expr, profile.fps);
+            }
+            s
+        }
     } else {
-        format!(
-            "{bg_source}[bg];[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,format=rgba,fps={fps}",
-            fps = profile.fps
-        )
+        {
+            let mut s = format!(
+                "{bg_source}[bg];[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,format=rgba,fps={fps}",
+                fps = profile.fps
+            );
+            if let Some(expr) = clip_select.as_ref() {
+                s = format!("{},select='{}',setpts=N/({}*TB)", s, expr, profile.fps);
+            }
+            s
+        }
     };
     let rounded = if radius > 0 {
         let alpha_expr = rounded_alpha_expr(radius);
@@ -707,13 +755,16 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     };
     if camera_shadow > 0 {
         format!(
-            "{base};{camera_rounded},split=2[cam][camshadow];[camshadow]boxblur={camera_shadow_blur}:1,colorchannelmixer=aa={camera_shadow_alpha}[camshadow];[base][camshadow]overlay=x={shadow_x}:y={shadow_y}:shortest=1[bg2];[bg2][cam]overlay=x={camera_x}:y={camera_y}:shortest=1[v]",
+            "{base};{camera_rounded},split=2[cam][camshadow];[camshadow]boxblur={camera_shadow_blur}:1,colorchannelmixer=aa={camera_shadow_alpha}[camshadow];[base][camshadow]overlay=x={shadow_x}:y={shadow_y}:shortest=1{enable_shadow}[bg2];[bg2][cam]overlay=x={camera_x}:y={camera_y}:shortest=1{enable_cam}[v]",
             shadow_x = camera_x + camera_shadow_offset,
-            shadow_y = camera_y + camera_shadow_offset
+            shadow_y = camera_y + camera_shadow_offset,
+            enable_shadow = camera_enable.as_ref().map(|e| format!(":enable={}", e)).unwrap_or_default(),
+            enable_cam = camera_enable.as_ref().map(|e| format!(":enable={}", e)).unwrap_or_default()
         )
     } else {
         format!(
-            "{base};{camera_rounded}[cam];[base][cam]overlay=x={camera_x}:y={camera_y}:shortest=1[v]"
+            "{base};{camera_rounded}[cam];[base][cam]overlay=x={camera_x}:y={camera_y}:shortest=1{enable}[v]",
+            enable = camera_enable.as_ref().map(|e| format!(":enable={}", e)).unwrap_or_default()
         )
     }
 }
@@ -831,6 +882,58 @@ fn derive_zoom_override(input_path: &str) -> Option<(String, String, String)> {
     Some((z_expr, x_expr, y_expr))
 }
 
+fn derive_camera_enable(input_path: &str) -> Option<String> {
+    let binding = PathBuf::from(input_path);
+    let dir = binding.parent()?;
+    let path = dir.join("camera_track.json");
+    let data = fs::read_to_string(&path).ok()?;
+    let track: CameraTrack = serde_json::from_str(&data).ok()?;
+    if track.segments.is_empty() {
+        return None;
+    }
+    let mut expr = String::new();
+    for seg in track.segments.iter() {
+        if !seg.visible {
+            continue;
+        }
+        let part = format!("between(t,{},{})", seg.start_s, seg.end_s);
+        if expr.is_empty() {
+            expr = part;
+        } else {
+            expr = format!("({})+({})", expr, part);
+        }
+    }
+    if expr.is_empty() {
+        None
+    } else {
+        Some(expr)
+    }
+}
+
+fn derive_clip_select(input_path: &str) -> Option<String> {
+    let binding = PathBuf::from(input_path);
+    let dir = binding.parent()?;
+    let path = dir.join("clip_track.json");
+    let data = fs::read_to_string(&path).ok()?;
+    let track: ClipTrack = serde_json::from_str(&data).ok()?;
+    if track.segments.is_empty() {
+        return None;
+    }
+    let mut expr = String::new();
+    for seg in track.segments.iter() {
+        let part = format!("between(t,{},{})", seg.start_s, seg.end_s);
+        if expr.is_empty() {
+            expr = part;
+        } else {
+            expr = format!("({})+({})", expr, part);
+        }
+    }
+    if expr.is_empty() {
+        None
+    } else {
+        Some(expr)
+    }
+}
 fn emit_export_status(app: &tauri::AppHandle, status: &ExportStatus) {
     let _ = app.emit("export_progress", status);
 }
@@ -966,7 +1069,9 @@ fn run_export_job(
         .map(|path| PathBuf::from(path).exists())
         .unwrap_or(false);
     let zoom_override = derive_zoom_override(&job.request.input_path);
-    let filter = build_export_filter(&job.request.edit_state, &job.request.profile, has_camera, zoom_override);
+    let camera_enable = derive_camera_enable(&job.request.input_path);
+    let clip_select = derive_clip_select(&job.request.input_path);
+    let filter = build_export_filter(&job.request.edit_state, &job.request.profile, has_camera, zoom_override, camera_enable, clip_select);
     let mut args = vec!["-y".to_string(), "-i".to_string(), job.request.input_path.clone()];
     if let Some(path) = camera_path {
         if has_camera {
@@ -2121,6 +2226,119 @@ fn ensure_zoom_track(input_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn ensure_clip_track(input_path: String) -> Result<String, String> {
+    let dir = PathBuf::from(&input_path)
+        .parent()
+        .ok_or("invalid_input_path")?
+        .to_path_buf();
+    let path = dir.join("clip_track.json");
+    if path.exists() {
+        return Ok(path.to_string_lossy().to_string());
+    }
+    let duration_ms = get_media_duration_ms(&input_path).unwrap_or(0);
+    let mut segments: Vec<ClipSegment> = Vec::new();
+    if duration_ms > 0 {
+        segments.push(ClipSegment { start_s: 0.0, end_s: (duration_ms as f64) / 1000.0, speed: None });
+    }
+    let track = ClipTrack { segments };
+    fs::write(&path, serde_json::to_string(&track).map_err(|_| "track_serialize_failed")?)
+        .map_err(|_| "track_write_failed")?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn save_clip_track(input_path: String, track_json: String) -> Result<String, String> {
+    let dir = PathBuf::from(&input_path)
+        .parent()
+        .ok_or("invalid_input_path")?
+        .to_path_buf();
+    let path = dir.join("clip_track.json");
+    fs::write(&path, track_json).map_err(|_| "track_write_failed".to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn ensure_camera_track(input_path: String) -> Result<String, String> {
+    let dir = PathBuf::from(&input_path)
+        .parent()
+        .ok_or("invalid_input_path")?
+        .to_path_buf();
+    let path = dir.join("camera_track.json");
+    if path.exists() {
+        return Ok(path.to_string_lossy().to_string());
+    }
+    let duration_ms = get_media_duration_ms(&input_path).unwrap_or(0);
+    let segments: Vec<CameraSegment> = if duration_ms > 0 {
+        vec![CameraSegment {
+            start_s: 0.0,
+            end_s: (duration_ms as f64) / 1000.0,
+            visible: true,
+            size_px: None,
+            position: None,
+            mirror: None,
+            blur: None,
+            shape: None,
+        }]
+    } else {
+        Vec::new()
+    };
+    let track = CameraTrack { segments };
+    fs::write(&path, serde_json::to_string(&track).map_err(|_| "track_serialize_failed")?)
+        .map_err(|_| "track_write_failed")?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn load_click_markers(input_path: String) -> Result<Vec<f64>, String> {
+    let dir = PathBuf::from(&input_path)
+        .parent()
+        .ok_or("invalid_input_path")?
+        .to_path_buf();
+    let cursor_path = {
+        let direct = dir.join("cursor.jsonl");
+        if direct.exists() {
+            direct
+        } else {
+            let mut found: Option<PathBuf> = None;
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.ends_with("cursor.jsonl"))
+                        .unwrap_or(false)
+                    {
+                        found = Some(p);
+                        break;
+                    }
+                }
+            }
+            found.ok_or("cursor_events_missing")?
+        }
+    };
+    let data = fs::read_to_string(&cursor_path).map_err(|_| "cursor_read_failed")?;
+    let mut times_s: Vec<f64> = Vec::new();
+    for line in data.lines() {
+        if let Ok(rec) = serde_json::from_str::<CursorEventRecord>(line) {
+            if rec.kind == "down" {
+                times_s.push((rec.offset_ms as f64) / 1000.0);
+            }
+        }
+    }
+    Ok(times_s)
+}
+#[tauri::command]
+fn save_camera_track(input_path: String, track_json: String) -> Result<String, String> {
+    let dir = PathBuf::from(&input_path)
+        .parent()
+        .ok_or("invalid_input_path")?
+        .to_path_buf();
+    let path = dir.join("camera_track.json");
+    fs::write(&path, track_json).map_err(|_| "track_write_failed".to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+#[tauri::command]
 fn save_zoom_track(input_path: String, track_json: String) -> Result<String, String> {
     let dir = PathBuf::from(&input_path)
         .parent()
@@ -2242,6 +2460,11 @@ pub fn run() {
             ensure_preview,
             ensure_zoom_track,
             save_zoom_track,
+            ensure_clip_track,
+            save_clip_track,
+            ensure_camera_track,
+            save_camera_track,
+            load_click_markers,
             get_export_dir,
             open_path,
             start_export,

@@ -25,6 +25,7 @@ type ZoomTrack = {
   frames: ZoomFrame[];
 };
 
+type Block = { id: string; start: number; end: number };
 type EditState = {
   aspect: string;
   padding: number;
@@ -113,7 +114,58 @@ const EditPage = () => {
   const realtimeFrameRef = useRef<ZoomFrame | null>(null);
   const smoothAxnRef = useRef<number | null>(null);
   const smoothAynRef = useRef<number | null>(null);
-  
+  const smoothZoomRef = useRef<number | null>(null);
+  const [clipBlocks, setClipBlocks] = useState<Block[]>([]);
+  const [zoomBlocks, setZoomBlocks] = useState<Block[]>([]);
+  const [avatarBlocks, setAvatarBlocks] = useState<Block[]>([]);
+  const historyRef = useRef<{ clip: Block[]; zoom: Block[]; avatar: Block[] }[]>([]);
+  const histIndexRef = useRef<number>(-1);
+  const pushHistory = (clip: Block[], zoom: Block[], avatar: Block[]) => {
+    const last = historyRef.current[histIndexRef.current] || null;
+    const same =
+      last &&
+      JSON.stringify(last.clip) === JSON.stringify(clip) &&
+      JSON.stringify(last.zoom) === JSON.stringify(zoom) &&
+      JSON.stringify(last.avatar) === JSON.stringify(avatar);
+    if (same) return;
+    historyRef.current = historyRef.current.slice(0, histIndexRef.current + 1);
+    historyRef.current.push({ clip: clip.map((b) => ({ ...b })), zoom: zoom.map((b) => ({ ...b })), avatar: avatar.map((b) => ({ ...b })) });
+    histIndexRef.current = historyRef.current.length - 1;
+  };
+  useEffect(() => {
+    pushHistory(clipBlocks, zoomBlocks, avatarBlocks);
+  }, [clipBlocks, zoomBlocks, avatarBlocks]);
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      const z = e.ctrlKey && !e.shiftKey && (e.key.toLowerCase() === "z");
+      const y = (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "z") || (e.ctrlKey && e.key.toLowerCase() === "y");
+      if (z) {
+        if (histIndexRef.current > 0) {
+          histIndexRef.current -= 1;
+          const entry = historyRef.current[histIndexRef.current];
+          setClipBlocks(entry.clip.map((b) => ({ ...b })));
+          setZoomBlocks(entry.zoom.map((b) => ({ ...b })));
+          setAvatarBlocks(entry.avatar.map((b) => ({ ...b })));
+          persistClipBlocks(entry.clip);
+          persistZoomBlocks(entry.zoom);
+          persistAvatarBlocks(entry.avatar);
+        }
+      } else if (y) {
+        if (histIndexRef.current < historyRef.current.length - 1) {
+          histIndexRef.current += 1;
+          const entry = historyRef.current[histIndexRef.current];
+          setClipBlocks(entry.clip.map((b) => ({ ...b })));
+          setZoomBlocks(entry.zoom.map((b) => ({ ...b })));
+          setAvatarBlocks(entry.avatar.map((b) => ({ ...b })));
+          persistClipBlocks(entry.clip);
+          persistZoomBlocks(entry.zoom);
+          persistAvatarBlocks(entry.avatar);
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, []);
 
   useEffect(() => {
     setOutputPath(localStorage.getItem("recordingOutputPath") ?? "");
@@ -188,6 +240,141 @@ const EditPage = () => {
       .catch(() => setZoomTrack(null));
   }, [outputPath]);
 
+  useEffect(() => {
+    if (!outputPath) return;
+    invoke<string>("ensure_clip_track", { inputPath: outputPath })
+      .then(async (path) => {
+        const url = convertFileSrc(path);
+        const res = await fetch(url);
+        const data = await res.json();
+        const segs = (data?.segments || []) as { start_s: number; end_s: number }[];
+        if (segs.length === 0) {
+          setClipBlocks([]);
+        } else {
+          const start = Math.min(...segs.map((s) => s.start_s));
+          const end = Math.max(...segs.map((s) => s.end_s));
+          setClipBlocks([{ id: "clip-1", start, end }]);
+        }
+      })
+      .catch(() => setClipBlocks([]));
+    invoke<string>("ensure_camera_track", { inputPath: outputPath })
+      .then(async (path) => {
+        const url = convertFileSrc(path);
+        const res = await fetch(url);
+        const data = await res.json();
+        const segs = (data?.segments || []) as { start_s: number; end_s: number; visible?: boolean }[];
+        const vis = segs.filter((s) => s.visible !== false);
+        if (vis.length === 0) {
+          setAvatarBlocks([]);
+        } else {
+          const start = Math.min(...vis.map((s) => s.start_s));
+          const end = Math.max(...vis.map((s) => s.end_s));
+          setAvatarBlocks([{ id: "avatar-1", start, end }]);
+        }
+      })
+      .catch(() => setAvatarBlocks([]));
+  }, [outputPath]);
+
+  useEffect(() => {
+    if (!zoomTrack || !previewDuration) {
+      setZoomBlocks([]);
+      return;
+    }
+    const frames = zoomTrack.frames || [];
+    const windows: { start: number; end: number }[] = [];
+    let i = 0;
+    const n = frames.length;
+    while (i < n) {
+      while (i < n && frames[i].zoom <= 1.0001) i++;
+      if (i >= n) break;
+      const s = (frames[i].time_ms || 0) / 1000;
+      let j = i;
+      while (j < n && frames[j].zoom > 1.0001) j++;
+      const e = (frames[Math.max(0, j - 1)].time_ms || 0) / 1000;
+      windows.push({ start: s, end: e });
+      i = j;
+      if (windows.length > 100) break;
+    }
+    const z = windows.length
+      ? windows.map((w, i2) => ({ id: `zoom-${i2 + 1}`, start: w.start, end: Math.min(previewDuration, w.end) }))
+      : [];
+    setZoomBlocks(z);
+  }, [zoomTrack, previewDuration]);
+
+  const persistClipBlocks = async (blocks: { id: string; start: number; end: number }[]) => {
+    if (!outputPath) return;
+    const seg = blocks[0];
+    const payload = seg
+      ? { segments: [{ start_s: seg.start, end_s: seg.end }] }
+      : { segments: [] as { start_s: number; end_s: number }[] };
+    await invoke<string>("save_clip_track", { inputPath: outputPath, trackJson: JSON.stringify(payload) }).catch(() => null);
+  };
+  const persistAvatarBlocks = async (blocks: { id: string; start: number; end: number }[]) => {
+    if (!outputPath) return;
+    const seg = blocks[0];
+    const payload = seg
+      ? { segments: [{ start_s: seg.start, end_s: seg.end, visible: true }] }
+      : { segments: [] as { start_s: number; end_s: number; visible: boolean }[] };
+    await invoke<string>("save_camera_track", { inputPath: outputPath, trackJson: JSON.stringify(payload) }).catch(() => null);
+  };
+  const persistZoomBlocks = async (blocks: { id: string; start: number; end: number }[]) => {
+    if (!outputPath || !previewDuration) return;
+    const fps = 30;
+    const totalFrames = Math.max(1, Math.round(previewDuration * fps));
+    const frames: ZoomFrame[] = [];
+    const rampIn = 0.4;
+    const rampOut = 0.4;
+    const ease = (u: number) => 1 + (2 - 1) * (1 - Math.pow(1 - Math.max(0, Math.min(1, u)), 3));
+    for (let i = 0; i < totalFrames; i++) {
+      const t = i / fps;
+      let inWindow = false;
+      let z = 1;
+      let ax = 0.5;
+      let ay = 0.5;
+      if (zoomTrack && Array.isArray(zoomTrack.frames) && zoomTrack.frames.length > 0) {
+        const si = Math.max(0, Math.min(zoomTrack.frames.length - 1, Math.round(t * (zoomTrack.fps || fps))));
+        const sf = zoomTrack.frames[si];
+        if (sf) {
+          ax = typeof sf.axn === "number" ? sf.axn : ax;
+          ay = typeof sf.ayn === "number" ? sf.ayn : ay;
+        }
+      }
+      for (const b of blocks) {
+        if (t >= b.start && t <= b.end) {
+          inWindow = true;
+          if (t < b.start + rampIn) {
+            const u = (t - b.start) / Math.max(1e-6, rampIn);
+            z = ease(u);
+          } else if (t > b.end - rampOut) {
+            const u = (b.end - t) / Math.max(1e-6, rampOut);
+            z = ease(u);
+          } else {
+            z = 2.0;
+          }
+          break;
+        }
+      }
+      frames.push({
+        time_ms: Math.round(t * 1000),
+        axn: ax,
+        ayn: ay,
+        zoom: inWindow ? z : 1.0,
+      });
+    }
+    const payload = {
+      fps,
+      frames,
+      settings: {
+        max_zoom: 2.0,
+        ramp_in_s: rampIn,
+        ramp_out_s: rampOut,
+        sample_ms: 120,
+        follow_threshold_px: 160,
+      },
+    };
+    await invoke<string>("save_zoom_track", { inputPath: outputPath, trackJson: JSON.stringify(payload) }).catch(() => null);
+    setZoomTrack(payload as ZoomTrack);
+  };
   
   useEffect(() => {
     if (!outputPath) {
@@ -695,7 +882,6 @@ const EditPage = () => {
     if (video.readyState < 2 || !vw || !vh || !Number.isFinite(video.currentTime)) return;
     ctx.imageSmoothingEnabled = true;
     ctx.clearRect(0, 0, cw, ch);
-    // no-op: keep full page ratio without zoom tracking
     let dx = cw;
     let dy = ch;
     let destX = 0;
@@ -717,13 +903,50 @@ const EditPage = () => {
       destY = Math.round((ch - dy) / 2);
     }
     const rr = dx / dy;
-    const srcAspect = vw / vh;
-    // contain + letterbox: scale source to fit inside dx x dy without cropping
-    const dw = srcAspect >= rr ? dx : Math.round(dy * srcAspect);
-    const dh = srcAspect >= rr ? Math.round(dx / srcAspect) : dy;
+    let z = 1;
+    let axn = 0.5;
+    let ayn = 0.5;
+    if (zoomTrack && zoomTrack.frames && zoomTrack.frames.length > 0) {
+      const fps = zoomTrack.fps || 30;
+      const idx = Math.max(0, Math.min(zoomTrack.frames.length - 1, Math.round((video.currentTime || 0) * fps)));
+      const f = zoomTrack.frames[idx];
+      if (f) {
+        z = f.zoom || 1;
+        axn = f.axn ?? 0.5;
+        ayn = f.ayn ?? 0.5;
+      }
+    }
+    if (realtimeFrameRef.current) {
+      const rf = realtimeFrameRef.current;
+      z = rf.zoom || z;
+      axn = typeof rf.axn === "number" ? rf.axn : axn;
+      ayn = typeof rf.ayn === "number" ? rf.ayn : ayn;
+    }
+    const tz = z;
+    const taxn = axn;
+    const tayn = ayn;
+    const prevZ = smoothZoomRef.current ?? tz;
+    const prevAxn = smoothAxnRef.current ?? taxn;
+    const prevAyn = smoothAynRef.current ?? tayn;
+    const nextZ = prevZ + (tz - prevZ) * 0.25;
+    const nextAxn = prevAxn + (taxn - prevAxn) * 0.35;
+    const nextAyn = prevAyn + (tayn - prevAyn) * 0.35;
+    smoothZoomRef.current = nextZ;
+    smoothAxnRef.current = nextAxn;
+    smoothAynRef.current = nextAyn;
+    z = nextZ;
+    axn = nextAxn;
+    ayn = nextAyn;
+    const sw = Math.max(1, Math.round(vw / Math.max(1e-6, z)));
+    const sh = Math.max(1, Math.round(vh / Math.max(1e-6, z)));
+    const sx = Math.max(0, Math.min(Math.round(axn * vw - sw / 2), vw - sw));
+    const sy = Math.max(0, Math.min(Math.round(ayn * vh - sh / 2), vh - sh));
+    const cropAspect = sw / sh;
+    const dw = cropAspect >= rr ? dx : Math.round(dy * cropAspect);
+    const dh = cropAspect >= rr ? Math.round(dx / cropAspect) : dy;
     const ox = destX + Math.round((dx - dw) / 2);
     const oy = destY + Math.round((dy - dh) / 2);
-    ctx.drawImage(video, ox, oy, dw, dh);
+    ctx.drawImage(video, sx, sy, sw, sh, ox, oy, dw, dh);
     return;
   };
   useEffect(() => {
@@ -913,6 +1136,21 @@ const EditPage = () => {
                 compact={true}
                 className="w-full"
                 smoothFactor={0.5}
+                clipBlocks={clipBlocks}
+                zoomBlocks={zoomBlocks}
+                avatarBlocks={avatarBlocks}
+                onClipChange={(blocks) => {
+                  setClipBlocks(blocks);
+                  persistClipBlocks(blocks);
+                }}
+                onZoomChange={(blocks) => {
+                  setZoomBlocks(blocks);
+                  persistZoomBlocks(blocks);
+                }}
+                onAvatarChange={(blocks) => {
+                  setAvatarBlocks(blocks);
+                  persistAvatarBlocks(blocks);
+                }}
                 onScrubStart={() => {
                   const video = previewVideoRef.current;
                   if (!video) return;

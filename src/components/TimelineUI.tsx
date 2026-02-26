@@ -1,4 +1,4 @@
-import { Button, Card, CardBody, Popover, PopoverTrigger, PopoverContent } from "@heroui/react";
+import { Button, Card, Popover, PopoverTrigger, PopoverContent } from "@heroui/react";
 import { FiChevronLeft, FiSearch, FiLink, FiMenu, FiScissors, FiCamera, FiMic, FiPlay, FiMaximize2, FiUser } from "react-icons/fi";
 import { useEffect, useRef, useState } from "react";
 
@@ -13,6 +13,12 @@ type TimelineUIProps = {
   onScrubStart?: () => void;
   onScrubMove?: (tSeconds: number) => void;
   onScrubEnd?: (tSeconds: number) => void;
+  clipBlocks?: { id: string; start: number; end: number }[];
+  zoomBlocks?: { id: string; start: number; end: number }[];
+  avatarBlocks?: { id: string; start: number; end: number }[];
+  onClipChange?: (blocks: { id: string; start: number; end: number }[]) => void;
+  onZoomChange?: (blocks: { id: string; start: number; end: number }[]) => void;
+  onAvatarChange?: (blocks: { id: string; start: number; end: number }[]) => void;
 };
 
 const TimelineUI = ({
@@ -26,6 +32,12 @@ const TimelineUI = ({
   onScrubStart,
   onScrubMove,
   onScrubEnd,
+  clipBlocks,
+  zoomBlocks,
+  avatarBlocks,
+  onClipChange,
+  onZoomChange,
+  onAvatarChange,
 }: TimelineUIProps) => {
   const labelStep = duration <= 12 ? 0.5 : 1;
   const labels = Array.from({ length: Math.floor(duration / labelStep) + 1 }, (_, i) => +(i * labelStep).toFixed(labelStep < 1 ? 1 : 0));
@@ -35,6 +47,8 @@ const TimelineUI = ({
   const targetXRef = useRef(0);
   const [playheadX, setPlayheadX] = useState(0);
   const playheadXRef = useRef(0);
+  const editingRef = useRef<{ type: "clip" | "zoom" | "avatar"; id: string; mode: "move" | "resize-l" | "resize-r"; startX: number; origStart: number; origEnd: number } | null>(null);
+  const [selected, setSelected] = useState<{ type: "clip" | "zoom" | "avatar"; id?: string } | null>(null);
   useEffect(() => {
     const el = railRef.current;
     if (!el) return;
@@ -73,6 +87,12 @@ const TimelineUI = ({
     const t = (x / rect.width) * duration;
     return Math.max(0, Math.min(duration, t));
   };
+  const toX = (t: number) => {
+    const el = railRef.current;
+    if (!el || !duration) return 0;
+    const rect = el.getBoundingClientRect();
+    return Math.max(0, Math.min((t / duration) * rect.width, rect.width));
+  };
   const onPointer = (clientX: number) => {
     const el = railRef.current;
     if (!el) return;
@@ -107,10 +127,130 @@ const TimelineUI = ({
     return `${minutes}:${seconds}:${ms}`;
   };
   const displayTime = dragging ? toTime(targetXRef.current) : ((duration || 0) * (playheadPercent / 100));
+  const handleBlockDown = (ev: React.PointerEvent, kind: "clip" | "zoom" | "avatar", id: string, mode: "move" | "resize-l" | "resize-r") => {
+    ev.stopPropagation();
+    setSelected({ type: kind, id: kind === "zoom" ? id : undefined });
+    const el = railRef.current;
+    if (!el) return;
+    (el as HTMLDivElement).setPointerCapture(ev.pointerId);
+    const target = (kind === "clip" ? clipBlocks : kind === "zoom" ? zoomBlocks : avatarBlocks) || [];
+    const b = target.find((x) => x.id === id);
+    if (!b) return;
+    editingRef.current = { type: kind, id, mode, startX: ev.clientX, origStart: b.start, origEnd: b.end };
+    const move = (e: PointerEvent) => {
+      if (!editingRef.current) return;
+      const rect = el.getBoundingClientRect();
+      const dx = Math.max(0, Math.min(e.clientX - rect.left, rect.width)) - Math.max(0, Math.min(editingRef.current.startX - rect.left, rect.width));
+      const dt = (dx / rect.width) * (duration || 0);
+      let ns = editingRef.current.origStart;
+      let ne = editingRef.current.origEnd;
+      if (editingRef.current.mode === "move") {
+        ns = Math.max(0, Math.min((duration || 0) - (ne - ns), ns + dt));
+        ne = Math.max(ns + 0.2, Math.min(duration || 0, ne + dt));
+      } else if (editingRef.current.mode === "resize-l") {
+        ns = Math.max(0, Math.min(ne - 0.2, ns + dt));
+      } else {
+        ne = Math.max(ns + 0.2, Math.min(duration || 0, ne + dt));
+      }
+      const applySnap = (t: number) => {
+        const m = minorStepPx || 10;
+        const px = toX(t);
+        const nearest = Math.round(px / m) * m;
+        if (Math.abs(nearest - px) <= 4) {
+          return toTime(nearest);
+        }
+        return t;
+      };
+      ns = applySnap(ns);
+      ne = applySnap(ne);
+      const next = target.map((x) => (x.id === id ? { ...x, start: ns, end: ne } : x));
+      if (editingRef.current.type === "clip" && onClipChange) onClipChange(next);
+      if (editingRef.current.type === "zoom" && onZoomChange) onZoomChange(next);
+      if (editingRef.current.type === "avatar" && onAvatarChange) onAvatarChange(next);
+    };
+    const up = () => {
+      (el as HTMLDivElement).releasePointerCapture(ev.pointerId);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      editingRef.current = null;
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  const renderBlocks = (kind: "clip" | "zoom" | "avatar") => {
+    const items = kind === "clip" ? clipBlocks : kind === "zoom" ? zoomBlocks : avatarBlocks;
+    const color =
+      kind === "clip" ? "bg-[#1e40af]" : kind === "zoom" ? "bg-[#db2777]" : "bg-[#0ea5e9]";
+    return (items || []).map((b: { id: string; start: number; end: number }) => {
+      const left = toX(b.start);
+      const width = Math.max(4, toX(b.end) - toX(b.start));
+      return (
+        <div
+          key={b.id}
+          className={`absolute ${color} rounded-2xl shadow-sm cursor-grab active:cursor-grabbing border ${selected?.type === kind && (selected.id ? selected.id === b.id : true) ? "border-cyan-400/60" : "border-transparent"}`}
+          style={{ left, width, top: kind === "avatar" ? (compact ? 6 : 8) : 8, height: compact ? (kind === "avatar" ? 44 : 60) : (kind === "avatar" ? 56 : 72) }}
+          onPointerDown={(e) => handleBlockDown(e, kind, b.id, "move")}
+        >
+          {(selected?.type === kind && (selected.id ? selected.id === b.id : true)) ? (
+            <>
+              <div
+                className="absolute left-0 top-0 h-full w-2 cursor-ew-resize"
+                onPointerDown={(e) => handleBlockDown(e, kind, b.id, "resize-l")}
+              />
+              <div
+                className="absolute right-0 top-0 h-full w-2 cursor-ew-resize"
+                onPointerDown={(e) => handleBlockDown(e, kind, b.id, "resize-r")}
+              />
+            </>
+          ) : null}
+          <div className="px-4 py-2.5 flex flex-col justify-between h-full text-white">
+            <div className="flex items-center space-x-2">
+              {kind === "clip" ? <FiScissors size={16} /> : kind === "zoom" ? <FiMaximize2 size={16} /> : <FiUser size={16} />}
+              <span className="font-semibold">{kind === "clip" ? "Clip" : kind === "zoom" ? "Zoom" : "Avatar"}</span>
+            </div>
+            {kind !== "avatar" ? (
+              <div className={`flex items-center ${kind === "zoom" ? "space-x-4 text-xs text-white/80" : "space-x-6 text-sm text-white/90"}`}>
+                {kind === "clip" ? (
+                  <>
+                    <div className="flex items-center space-x-1">
+                      <FiCamera size={12} />
+                      <span>Camera overlay</span>
+                    </div>
+                    <div className="flex items-center space-x-1">
+                      <FiMic size={12} />
+                      <span>100%</span>
+                    </div>
+                    <div className="flex items-center space-x-1">
+                      <FiPlay size={12} />
+                      <span>1.00×</span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center space-x-1">
+                      <FiMaximize2 size={14} />
+                      <span>2.00×</span>
+                    </div>
+                    <div className="flex items-center space-x-1">
+                      <FiPlay size={14} />
+                      <span>0.70×</span>
+                    </div>
+                    <div className="flex items-center space-x-1">
+                      <span>Follow cursor</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      );
+    });
+  };
   return (
-    <div className={`w-full rounded-2xl border border-white/10 bg-slate-950/60 text-slate-100 overflow-hidden ${className ?? ""}`}>
+    <div className={`w-full rounded-2xl border border-white/10 bg-slate-950/60 text-slate-100 ${className ?? ""}`}>
       <div className="relative flex">
-        <div className="w-10 bg-slate-900/60 border-r border-white/10 flex flex-col items-center py-3 space-y-3">
+        <div className="w-10 bg-slate-900/60 border-r border-white/10 flex flex-col items-center py-3 space-y-4">
           <Popover isOpen={hoverId === "back"} placement="top" showArrow offset={8}>
             <PopoverTrigger>
               <Button
@@ -228,75 +368,17 @@ const TimelineUI = ({
             />
           </div>
 
-          <div className="p-3 space-y-3">
-            <Card className="bg-[#1e40af] border-none rounded-xl overflow-hidden relative" style={{ height: compact ? "56px" : "64px" }}>
-              <CardBody className="px-3 py-2 flex flex-col justify-between">
-                <div className="flex items-center space-x-2">
-                  <FiScissors size={16} className="text-white" />
-                  <span className="font-semibold text-white">Clip</span>
-                </div>
-                <div className="flex items-center space-x-6 text-sm text-white/90">
-                  <div className="flex items-center space-x-1">
-                    <FiCamera size={12} />
-                    <span>Camera overlay</span>
-                  </div>
-                  <div className="flex items-center space-x-1">
-                    <FiMic size={12} />
-                    <span>100%</span>
-                  </div>
-                  <div className="flex items-center space-x-1">
-                    <FiPlay size={12} />
-                    <span>1.00×</span>
-                  </div>
-                </div>
-              </CardBody>
-              <div className="absolute top-2 left-[20%] w-12 h-4 bg-yellow-400 rounded-md"></div>
-              <div className="absolute top-2 left-[40%] w-12 h-4 bg-yellow-400 rounded-md"></div>
-              <div className="absolute top-2 left-[65%] w-12 h-4 bg-yellow-400 rounded-md"></div>
-              <div className="absolute top-2 left-[82%] w-12 h-4 bg-yellow-400 rounded-md"></div>
+          <div className="p-4 space-y-4">
+            <Card className="bg-transparent border-none rounded-xl overflow-visible relative" style={{ height: compact ? "60px" : "68px" }}>
+              {renderBlocks("clip")}
             </Card>
 
-            <Card className="bg-[#db2777] border-none rounded-xl overflow-hidden relative" style={{ height: compact ? "56px" : "64px" }}>
-              <CardBody className="px-3 py-2 flex flex-col justify-between">
-                <div className="flex items-center space-x-2">
-                  <FiMaximize2 size={16} className="text-white" />
-                  <span className="font-semibold text-white">Zoom</span>
-                </div>
-                <div className="flex items-center space-x-4 text-xs text-white/80">
-                  <div className="flex items-center space-x-1">
-                    <FiMaximize2 size={14} />
-                    <span>2.00×</span>
-                  </div>
-                  <div className="flex items-center space-x-1">
-                    <FiPlay size={14} />
-                    <span>0.70×</span>
-                  </div>
-                  <div className="flex items-center space-x-1">
-                    <span>Follow cursor</span>
-                  </div>
-                </div>
-              </CardBody>
+            <Card className="bg-transparent border-none rounded-xl overflow-visible relative" style={{ height: compact ? "60px" : "68px" }}>
+              {renderBlocks("zoom")}
             </Card>
 
-            <Card className="bg-[#0ea5e9] border-none rounded-xl overflow-hidden relative" style={{ height: compact ? "48px" : "60px" }}>
-              <CardBody className="px-3 py-2 flex flex-col justify-between">
-                <div className="flex items-center space-x-2">
-                  <FiUser size={16} className="text-white" />
-                  <span className="font-semibold text-white">Avatar</span>
-                </div>
-                <div className="flex items-center space-x-4 text-xs text-white/80">
-                  <div className="flex items-center space-x-1">
-                    <FiCamera size={14} />
-                    <span>On</span>
-                  </div>
-                  <div className="flex items-center space-x-1">
-                    <FiPlay size={14} />
-                    <span>Synced</span>
-                  </div>
-                </div>
-              </CardBody>
-              <div className="absolute bottom-2 left-[30%] w-24 h-3 bg-white/70 rounded-md"></div>
-              <div className="absolute bottom-2 left-[62%] w-16 h-3 bg-white/70 rounded-md"></div>
+            <Card className="bg-transparent border-none rounded-xl overflow-visible relative" style={{ height: compact ? "52px" : "64px" }}>
+              {renderBlocks("avatar")}
             </Card>
           </div>
 
