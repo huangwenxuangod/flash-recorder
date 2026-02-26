@@ -781,6 +781,7 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     };
     let camera_scale_expr = if let Some((_, _, _, p_expr)) = zoom_override.as_ref() {
         let target = if edit_state.aspect.as_str() == "9:16" { 0.62 } else { 0.7 };
+        let p_expr = p_expr.replace("time", "t");
         format!("(1+({target}-1)*{p})", target = target, p = p_expr)
     } else {
         "1".to_string()
@@ -802,6 +803,8 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
             format!("max(0,{}-({})-{})", output_h, camera_size_expr, offset),
         ),
     };
+    let camera_x_value = format!("'{}'", camera_x_expr);
+    let camera_y_value = format!("'{}'", camera_y_expr);
     let camera_radius = match edit_state.camera_shape.as_str() {
         "circle" => camera_size / 2,
         "rounded" => evenize((inner_w / 24).max(4)),
@@ -823,27 +826,35 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
         camera_base
     };
     let camera_scaled = format!(
-        "{camera_rounded},scale=round(iw*{scale}):round(ih*{scale}):eval=frame",
+        "{camera_rounded},scale=w='round(iw*({scale}))':h='round(ih*({scale}))':eval=frame",
         scale = camera_scale_expr
     );
     if camera_shadow > 0 {
-        let shadow_x_expr = format!("({})+{}", camera_x_expr, camera_shadow_offset);
-        let shadow_y_expr = format!("({})+{}", camera_y_expr, camera_shadow_offset);
+        let shadow_x_expr = format!("'({})+{}'", camera_x_expr, camera_shadow_offset);
+        let shadow_y_expr = format!("'({})+{}'", camera_y_expr, camera_shadow_offset);
+        let enable_expr = camera_enable
+            .as_ref()
+            .map(|e| format!(":enable='{}'", e.replace('\'', "\\'").replace(",", "\\,")))
+            .unwrap_or_default();
         format!(
             "{base};{camera_scaled},split=2[cam][camshadow];[camshadow]boxblur={camera_shadow_blur}:1,colorchannelmixer=aa={camera_shadow_alpha}[camshadow];[base][camshadow]overlay=x={shadow_x}:y={shadow_y}:shortest=1{enable_shadow}[bg2];[bg2][cam]overlay=x={camera_x}:y={camera_y}:shortest=1{enable_cam}[v]",
             shadow_x = shadow_x_expr,
             shadow_y = shadow_y_expr,
-            camera_x = camera_x_expr,
-            camera_y = camera_y_expr,
-            enable_shadow = camera_enable.as_ref().map(|e| format!(":enable={}", e)).unwrap_or_default(),
-            enable_cam = camera_enable.as_ref().map(|e| format!(":enable={}", e)).unwrap_or_default()
+            camera_x = camera_x_value,
+            camera_y = camera_y_value,
+            enable_shadow = enable_expr,
+            enable_cam = enable_expr
         )
     } else {
+        let enable_expr = camera_enable
+            .as_ref()
+            .map(|e| format!(":enable='{}'", e.replace('\'', "\\'").replace(",", "\\,")))
+            .unwrap_or_default();
         format!(
             "{base};{camera_scaled}[cam];[base][cam]overlay=x={camera_x}:y={camera_y}:shortest=1{enable}[v]",
-            camera_x = camera_x_expr,
-            camera_y = camera_y_expr,
-            enable = camera_enable.as_ref().map(|e| format!(":enable={}", e)).unwrap_or_default()
+            camera_x = camera_x_value,
+            camera_y = camera_y_value,
+            enable = enable_expr
         )
     }
 }

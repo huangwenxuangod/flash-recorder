@@ -644,6 +644,11 @@ const EditPage = () => {
           toast.dismiss(exportToastIdRef.current);
           exportToastIdRef.current = null;
         }
+        if (status.error) {
+          console.error("export_failed detail:", status.error);
+        } else {
+          console.error("export_failed detail: empty error payload", status);
+        }
         const message =
           typeof status.error === "string" && status.error.trim().length > 0
             ? status.error.split("\n")[0].slice(0, 140)

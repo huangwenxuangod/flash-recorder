@@ -223,10 +223,12 @@ const TimelineUI = ({
     return (items || []).map((b: { id: string; start: number; end: number }) => {
       const left = toX(b.start);
       const width = Math.max(4, toX(b.end) - toX(b.start));
+      const isSelected =
+        selected?.type === kind && (selected.id ? selected.id === b.id : true);
       return (
         <div
           key={b.id}
-          className={`absolute ${color} rounded-2xl shadow-sm cursor-grab active:cursor-grabbing ${selected?.type === kind && (selected.id ? selected.id === b.id : true) ? "ring-2 ring-cyan-400/60" : ""}`}
+          className={`absolute ${color} rounded-2xl shadow-sm cursor-grab active:cursor-grabbing overflow-hidden ${isSelected ? "ring-2 ring-cyan-400/60" : ""}`}
           style={{ left, width, top: kind === "avatar" ? (compact ? 6 : 8) : 8, height: compact ? (kind === "avatar" ? 44 : 60) : (kind === "avatar" ? 56 : 72) }}
           onPointerDown={(e) => handleBlockDown(e, kind, b.id, "move")}
           onContextMenu={(e) => {
@@ -257,38 +259,36 @@ const TimelineUI = ({
               <span className="font-semibold">{kind === "clip" ? "Clip" : kind === "zoom" ? "Zoom" : "Avatar"}</span>
             </div>
             {kind !== "avatar" ? (
-              <div className={`flex items-center ${kind === "zoom" ? "space-x-4 text-xs text-white/80" : "space-x-6 text-sm text-white/90"}`}>
-                {kind === "clip" ? (
-                  <>
-                    <div className="flex items-center space-x-1">
-                      <FiCamera size={12} />
-                      <span>Camera overlay</span>
-                    </div>
-                    <div className="flex items-center space-x-1">
-                      <FiMic size={12} />
-                      <span>100%</span>
-                    </div>
-                    <div className="flex items-center space-x-1">
-                      <FiPlay size={12} />
-                      <span>1.00×</span>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="flex items-center space-x-1">
-                      <FiMaximize2 size={14} />
-                      <span>2.00×</span>
-                    </div>
-                    <div className="flex items-center space-x-1">
-                      <FiPlay size={14} />
-                      <span>0.70×</span>
-                    </div>
-                    <div className="flex items-center space-x-1">
-                      <span>Follow cursor</span>
-                    </div>
-                  </>
-                )}
-              </div>
+              kind === "clip" ? (
+                <div className="flex items-center space-x-6 text-sm text-white/90">
+                  <div className="flex items-center space-x-1">
+                    <FiCamera size={12} />
+                    <span>Camera overlay</span>
+                  </div>
+                  <div className="flex items-center space-x-1">
+                    <FiMic size={12} />
+                    <span>100%</span>
+                  </div>
+                  <div className="flex items-center space-x-1">
+                    <FiPlay size={12} />
+                    <span>1.00×</span>
+                  </div>
+                </div>
+              ) : isSelected ? (
+                <div className="flex items-center space-x-4 text-xs text-white/80">
+                  <div className="flex items-center space-x-1">
+                    <FiMaximize2 size={14} />
+                    <span>2.00×</span>
+                  </div>
+                  <div className="flex items-center space-x-1">
+                    <FiPlay size={14} />
+                    <span>0.70×</span>
+                  </div>
+                  <div className="flex items-center space-x-1">
+                    <span>Follow cursor</span>
+                  </div>
+                </div>
+              ) : null
             ) : null}
           </div>
         </div>
@@ -436,9 +436,11 @@ const TimelineUI = ({
               {renderBlocks("clip")}
             </Card>
 
-            <Card className="bg-transparent border-none rounded-xl overflow-visible relative" style={{ height: compact ? "60px" : "68px" }}>
-              {renderBlocks("zoom")}
-            </Card>
+            {zoomBlocks && zoomBlocks.length > 0 ? (
+              <Card className="bg-transparent border-none rounded-xl overflow-visible relative" style={{ height: compact ? "60px" : "68px" }}>
+                {renderBlocks("zoom")}
+              </Card>
+            ) : null}
 
             <Card className="bg-transparent border-none rounded-xl overflow-visible relative" style={{ height: compact ? "52px" : "64px" }}>
               {renderBlocks("avatar")}
