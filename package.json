@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "cross-env TAILWIND_DISABLE_OXIDE=1 tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -29,6 +29,7 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
     "tailwindcss": "^4.2.1",
+    "cross-env": "^7.0.3",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"
   }
