@@ -577,7 +577,7 @@ function MainApp() {
                 <Button
                   type="button"
                   onClick={() => setView("main")}
-                  className="rounded-full border border-white/10 bg-slate-900/60 px-3 py-1 text-xs text-slate-300 transition hover:border-white/20"
+                  className="rounded-full border border-white/10 bg-slate-900/60 px-3 py-1 text-xs text-slate-300 transition hover:border-white/20 cursor-pointer"
                 >
                   返回
                 </Button>
@@ -592,7 +592,7 @@ function MainApp() {
                       <Button
                         type="button"
                         onClick={chooseExportDir}
-                        className="mt-2 flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-800/80 bg-slate-950/90 px-3 py-2.5 text-left transition hover:border-slate-700/80"
+                        className="mt-2 flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-800/80 bg-slate-950/90 px-3 py-2.5 text-left transition hover:border-slate-700/80 cursor-pointer"
                       >
                         <span className="flex items-center gap-3">
                           <FiFolder className="text-slate-500" />
@@ -642,7 +642,7 @@ function MainApp() {
                       role="switch"
                       aria-checked={settings.autostart}
                       onClick={() => toggleAutostart()}
-                      className={`relative h-7 w-12 rounded-full border transition ${
+                      className={`relative h-7 w-12 rounded-full border transition cursor-pointer ${
                         settings.autostart ? "border-cyan-400/60 bg-cyan-400/30" : "border-white/10 bg-slate-900/70"
                       } ${autostartLoading ? "opacity-60 pointer-events-none" : ""}`}
                     >
@@ -655,7 +655,7 @@ function MainApp() {
                   <Button
                     type="button"
                     onClick={resetSettings}
-                    className="rounded-full border border-white/10 bg-slate-900/70 px-4 py-2 text-xs text-slate-300 transition hover:border-white/20"
+                    className="rounded-full border border-white/10 bg-slate-900/70 px-4 py-2 text-xs text-slate-300 transition hover:border-white/20 cursor-pointer"
                   >
                     恢复默认
                   </Button>
@@ -746,7 +746,7 @@ function MainApp() {
                   <Button
                     key={title}
                     type="button"
-                    className="mb-2 w-full rounded-xl border border-slate-800/80 bg-slate-950/80 px-3 py-2 text-left text-sm text-slate-100 transition hover:border-slate-700/80 hover:bg-slate-900/80"
+                    className="mb-2 w-full rounded-xl border border-slate-800/80 bg-slate-950/80 px-3 py-2 text-left text-sm text-slate-100 transition hover:border-slate-700/80 hover:bg-slate-900/80 cursor-pointer"
                     onClick={async () => {
                       setWindowPickerOpen(false);
                       await startRecording({ captureMode: "window", windowTitle: title });
@@ -760,7 +760,7 @@ function MainApp() {
             <div className="mt-3 flex justify-end">
               <Button
                 type="button"
-                className="rounded-full border border-white/10 bg-slate-900/70 px-4 py-2 text-xs text-slate-300 transition hover:border-white/20"
+                className="rounded-full border border-white/10 bg-slate-900/70 px-4 py-2 text-xs text-slate-300 transition hover:border-white/20 cursor-pointer"
                 onClick={() => setWindowPickerOpen(false)}
               >
                 取消

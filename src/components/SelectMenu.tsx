@@ -33,9 +33,9 @@ export function SelectMenu({ value, options, onChange, icon }: SelectMenuProps) 
   }, []);
 
   return (
-    <div className="relative" ref={rootRef}>
+    <div className="relative pointer-events-auto" ref={rootRef}>
       <Button
-        className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-800/80 bg-slate-950/90 px-3 py-2.5 text-left transition hover:border-slate-700/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400/30"
+        className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-800/80 bg-slate-950/90 px-3 py-2.5 text-left transition hover:border-slate-700/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400/30 cursor-pointer"
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         aria-haspopup="listbox"
@@ -75,7 +75,7 @@ export function SelectMenu({ value, options, onChange, icon }: SelectMenuProps) 
                     onChange(option.value);
                     setOpen(false);
                   }}
-                  className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${
+                  className={`w-full rounded-xl px-3 py-2 text-left text-sm transition cursor-pointer ${
                     selected ? "bg-slate-800/80 text-white" : "text-slate-200 hover:bg-slate-800/60"
                   }`}
                 >

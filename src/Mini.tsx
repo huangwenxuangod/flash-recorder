@@ -208,7 +208,7 @@ function Mini() {
           </div>
           <div className="flex-1" />
           <Button
-            className="flex h-12 w-12 items-center justify-center rounded-full border border-red-400/40 bg-red-500/15 text-red-200 transition hover:bg-red-500/25 disabled:opacity-60"
+            className="flex h-12 w-12 items-center justify-center rounded-full border border-red-400/40 bg-red-500/15 text-red-200 transition hover:bg-red-500/25 disabled:opacity-60 cursor-pointer"
             type="button"
             onClick={stopRecording}
             disabled={!isRecording}

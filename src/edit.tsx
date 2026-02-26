@@ -95,6 +95,7 @@ const EditPage = () => {
   const [previewTime, setPreviewTime] = useState(0);
   const [previewPlaying, setPreviewPlaying] = useState(false);
   const isScrubbingRef = useRef(false);
+  const prevPlayingRef = useRef(false);
   const previewAreaRef = useRef<HTMLDivElement | null>(null);
   const [previewBaseHeight, setPreviewBaseHeight] = useState(236);
   const previewContentRef = useRef<HTMLDivElement | null>(null);
@@ -112,8 +113,7 @@ const EditPage = () => {
   const realtimeFrameRef = useRef<ZoomFrame | null>(null);
   const smoothAxnRef = useRef<number | null>(null);
   const smoothAynRef = useRef<number | null>(null);
-  // 已移除旧 Zoom 编辑状态
-  // 移除旧 zoomSegments 统计逻辑
+  
 
   useEffect(() => {
     setOutputPath(localStorage.getItem("recordingOutputPath") ?? "");
@@ -188,10 +188,7 @@ const EditPage = () => {
       .catch(() => setZoomTrack(null));
   }, [outputPath]);
 
-  // 移除旧 importSegmentsFromTrack 实现
-  // 已移除 clamp01
-  // 移除旧 generateTrackFromSegments 实现
-  // 移除旧 saveZoomEdits 实现
+  
   useEffect(() => {
     if (!outputPath) {
       return;
@@ -296,6 +293,44 @@ const EditPage = () => {
   }, [previewSrc]);
 
   useEffect(() => {
+    const video = previewVideoRef.current;
+    if (!video) return;
+    let stop = false;
+    let rafId: number | null = null;
+    const runRaf = () => {
+      if (stop) return;
+      if (!isScrubbingRef.current) {
+        setPreviewTime(video.currentTime || 0);
+      }
+      drawCanvas();
+      rafId = requestAnimationFrame(runRaf);
+    };
+    const hasRvfc = typeof (video as any).requestVideoFrameCallback === "function";
+    if (previewPlaying) {
+      if (hasRvfc) {
+        const tick = () => {
+          if (stop) return;
+          if (!isScrubbingRef.current) {
+            setPreviewTime(video.currentTime || 0);
+          }
+          drawCanvas();
+          (video as any).requestVideoFrameCallback(tick);
+        };
+        (video as any).requestVideoFrameCallback(tick);
+      } else {
+        runRaf();
+      }
+    }
+    return () => {
+      stop = true;
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+    };
+  }, [previewPlaying, previewSrc]);
+
+  useEffect(() => {
     if (!cameraPath) {
       setAvatarSrc("");
       return;
@@ -393,7 +428,7 @@ const EditPage = () => {
       }
       const areaRect = area.getBoundingClientRect();
       const sectionRect = section.getBoundingClientRect();
-      const offsetY = 14;
+      const offsetY = -35;
       const left =
         Math.round(areaRect.left + areaRect.width / 2) - Math.round(sectionRect.left);
       const top = Math.round(areaRect.bottom + offsetY) - Math.round(sectionRect.top);
@@ -638,9 +673,9 @@ const EditPage = () => {
       avatarVideo.play().catch(() => null);
     }
   };
-  // 移除旧预览拖拽与滑块逻辑
+  
   const rafRef = useRef<number | null>(null);
-  // 移除旧 sampleZoom 实现
+  
   const drawCanvas = () => {
     const video = previewVideoRef.current;
     const canvas = canvasRef.current;
@@ -655,11 +690,11 @@ const EditPage = () => {
     }
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    const vw = video.videoWidth || 0;
+    const vh = video.videoHeight || 0;
+    if (video.readyState < 2 || !vw || !vh || !Number.isFinite(video.currentTime)) return;
     ctx.imageSmoothingEnabled = true;
     ctx.clearRect(0, 0, cw, ch);
-    const vw = Math.max(1, video.videoWidth || 0);
-    const vh = Math.max(1, video.videoHeight || 0);
-    if (!vw || !vh || !Number.isFinite(video.currentTime)) return;
     // no-op: keep full page ratio without zoom tracking
     let dx = cw;
     let dy = ch;
@@ -692,19 +727,7 @@ const EditPage = () => {
     return;
   };
   useEffect(() => {
-    if (previewPlaying) {
-      const tick = () => {
-        drawCanvas();
-        rafRef.current = window.requestAnimationFrame(tick);
-      };
-      rafRef.current = window.requestAnimationFrame(tick);
-      return () => {
-        if (rafRef.current) {
-          window.cancelAnimationFrame(rafRef.current);
-          rafRef.current = null;
-        }
-      };
-    } else {
+    if (!previewPlaying) {
       drawCanvas();
       if (rafRef.current) {
         window.cancelAnimationFrame(rafRef.current);
@@ -833,7 +856,7 @@ const EditPage = () => {
               </div>
             </div>
             <div
-              className="pointer-events-auto absolute z-50 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-[10px] text-slate-200"
+              className="pointer-events-none absolute z-50 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-transparent px-3 py-1.5 text-[10px] text-slate-200"
               style={{ left: toolbarPos.left, top: toolbarPos.top }}
             >
               <div className="w-24">
@@ -848,7 +871,7 @@ const EditPage = () => {
                 type="button"
                 onClick={togglePreviewPlayback}
                 disabled={previewControlsDisabled}
-                className={`flex items-center gap-2 rounded-full border border-white/10 px-2.5 py-1 transition ${
+                className={`pointer-events-auto flex items-center gap-2 rounded-full border border-white/10 px-2.5 py-1 transition ${
                   previewControlsDisabled
                     ? "bg-slate-900/50 text-slate-500"
                     : "bg-slate-950/70 text-slate-200 hover:border-cyan-400/50"
@@ -861,7 +884,7 @@ const EditPage = () => {
                 type="button"
                 onClick={handleExport}
                 disabled={exportDisabled}
-                className={`flex items-center gap-2 rounded-full border border-white/10 px-2.5 py-1 transition ${
+                className={`pointer-events-auto flex items-center gap-2 rounded-full border border-white/10 px-2.5 py-1 transition ${
                   exportDisabled
                     ? "bg-slate-900/50 text-slate-500"
                     : "bg-slate-950/70 text-slate-200 hover:border-cyan-400/50"
@@ -875,7 +898,7 @@ const EditPage = () => {
               <Button
                 type="button"
                 onClick={openExportFolder}
-                className="flex items-center gap-2 rounded-full border border-white/10 px-2.5 py-1 transition bg-slate-950/70 text-slate-200 hover:border-cyan-400/50"
+                className="pointer-events-auto flex items-center gap-2 rounded-full border border-white/10 px-2.5 py-1 transition bg-slate-950/70 text-slate-200 hover:border-cyan-400/50"
               >
                 <FiFolder />
                 <span>打开文件夹</span>
@@ -889,6 +912,36 @@ const EditPage = () => {
                 playheadPercent={previewDuration > 0 ? Math.min(100, Math.max(0, (previewTime / previewDuration) * 100)) : 0}
                 compact={true}
                 className="w-full"
+                smoothFactor={0.5}
+                onScrubStart={() => {
+                  const video = previewVideoRef.current;
+                  if (!video) return;
+                  prevPlayingRef.current = !video.paused && !video.ended;
+                  isScrubbingRef.current = true;
+                  video.pause();
+                }}
+                onScrubMove={(tSeconds) => {
+                  const video = previewVideoRef.current;
+                  if (!video) return;
+                  const t = Math.max(0, Math.min(previewDuration || 0, tSeconds));
+                  video.currentTime = t;
+                  syncAvatarToPreview(t);
+                  setPreviewTime(t);
+                }}
+                onScrubEnd={(tSeconds) => {
+                  const video = previewVideoRef.current;
+                  if (!video) return;
+                  const t = Math.max(0, Math.min(previewDuration || 0, tSeconds));
+                  video.currentTime = t;
+                  isScrubbingRef.current = false;
+                  syncAvatarToPreview(t);
+                  setPreviewTime(t);
+                  if (prevPlayingRef.current && !video.ended) {
+                    video.play().catch(() => null);
+                  } else {
+                    video.pause();
+                  }
+                }}
               />
             </div>
             <Toaster position="top-center" toastOptions={{ duration: 1600 }} />
@@ -1010,7 +1063,7 @@ const EditPage = () => {
                       role="switch"
                       aria-checked={cameraMirror}
                       onClick={() => setCameraMirror((v) => !v)}
-                      className={`h-5 w-10 rounded-full border transition ${
+                    className={`h-5 w-10 rounded-full border transition cursor-pointer ${
                         cameraMirror ? "border-cyan-400/60 bg-cyan-400/30" : "border-white/10 bg-slate-900/80"
                       }`}
                     >
@@ -1024,7 +1077,7 @@ const EditPage = () => {
                       role="switch"
                       aria-checked={cameraBlur}
                       onClick={() => setCameraBlur((v) => !v)}
-                      className={`h-5 w-10 rounded-full border transition ${
+                    className={`h-5 w-10 rounded-full border transition cursor-pointer ${
                         cameraBlur ? "border-cyan-400/60 bg-cyan-400/30" : "border-white/10 bg-slate-900/80"
                       }`}
                     >
