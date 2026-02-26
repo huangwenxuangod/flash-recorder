@@ -49,6 +49,7 @@ const TimelineUI = ({
   const playheadXRef = useRef(0);
   const editingRef = useRef<{ type: "clip" | "zoom" | "avatar"; id: string; mode: "move" | "resize-l" | "resize-r"; startX: number; origStart: number; origEnd: number } | null>(null);
   const [selected, setSelected] = useState<{ type: "clip" | "zoom" | "avatar"; id?: string } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; kind: "clip" | "zoom" | "avatar"; id: string } | null>(null);
   useEffect(() => {
     const el = railRef.current;
     if (!el) return;
@@ -177,6 +178,44 @@ const TimelineUI = ({
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   };
+  const handleDelete = (k: "clip" | "zoom" | "avatar", id?: string) => {
+    const src = (k === "clip" ? clipBlocks : k === "zoom" ? zoomBlocks : avatarBlocks) || [];
+    const next = id ? src.filter((x) => x.id !== id) : [];
+    if (k === "clip" && onClipChange) onClipChange(next);
+    if (k === "zoom" && onZoomChange) onZoomChange(next);
+    if (k === "avatar" && onAvatarChange) onAvatarChange(next);
+    setSelected(null);
+    setCtxMenu(null);
+  };
+  const handleCopy = (k: "clip" | "zoom" | "avatar", id: string) => {
+    const src = (k === "clip" ? clipBlocks : k === "zoom" ? zoomBlocks : avatarBlocks) || [];
+    const it = src.find((x) => x.id === id);
+    if (!it) return;
+    const dup = { ...it, id: `${k}-${Date.now()}` };
+    const next = [...src, dup];
+    if (k === "clip" && onClipChange) onClipChange(next);
+    if (k === "zoom" && onZoomChange) onZoomChange(next);
+    if (k === "avatar" && onAvatarChange) onAvatarChange(next);
+    setCtxMenu(null);
+  };
+  const handleSplit = (k: "clip" | "zoom" | "avatar", id: string) => {
+    const src = (k === "clip" ? clipBlocks : k === "zoom" ? zoomBlocks : avatarBlocks) || [];
+    const it = src.find((x) => x.id === id);
+    if (!it || !duration) return;
+    const t = ((duration || 0) * (playheadPercent / 100));
+    const minGap = 0.2;
+    if (t <= it.start + minGap || t >= it.end - minGap) {
+      setCtxMenu(null);
+      return;
+    }
+    const left = { ...it, end: t, id: `${k}-${Date.now()}` };
+    const right = { ...it, start: t, id: `${k}-${Date.now() + 1}` };
+    const next = src.map((x) => (x.id === id ? left : x)).concat([right]);
+    if (k === "clip" && onClipChange) onClipChange(next);
+    if (k === "zoom" && onZoomChange) onZoomChange(next);
+    if (k === "avatar" && onAvatarChange) onAvatarChange(next);
+    setCtxMenu(null);
+  };
   const renderBlocks = (kind: "clip" | "zoom" | "avatar") => {
     const items = kind === "clip" ? clipBlocks : kind === "zoom" ? zoomBlocks : avatarBlocks;
     const color =
@@ -187,9 +226,18 @@ const TimelineUI = ({
       return (
         <div
           key={b.id}
-          className={`absolute ${color} rounded-2xl shadow-sm cursor-grab active:cursor-grabbing border ${selected?.type === kind && (selected.id ? selected.id === b.id : true) ? "border-cyan-400/60" : "border-transparent"}`}
+          className={`absolute ${color} rounded-2xl shadow-sm cursor-grab active:cursor-grabbing ${selected?.type === kind && (selected.id ? selected.id === b.id : true) ? "ring-2 ring-cyan-400/60" : ""}`}
           style={{ left, width, top: kind === "avatar" ? (compact ? 6 : 8) : 8, height: compact ? (kind === "avatar" ? 44 : 60) : (kind === "avatar" ? 56 : 72) }}
           onPointerDown={(e) => handleBlockDown(e, kind, b.id, "move")}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            const el = railRef.current;
+            if (!el) return;
+            const rect = el.getBoundingClientRect();
+            const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+            const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
+            setCtxMenu({ x, y, kind, id: b.id });
+          }}
         >
           {(selected?.type === kind && (selected.id ? selected.id === b.id : true)) ? (
             <>
@@ -326,11 +374,13 @@ const TimelineUI = ({
         </div>
 
         <div
-          className="flex-1 relative"
+          className="flex-1 relative outline-none focus:outline-none focus-visible:outline-none"
           ref={railRef}
           onPointerDown={(e) => {
             (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
             setDragging(true);
+            setSelected(null);
+            setCtxMenu(null);
             if (onScrubStart) onScrubStart();
             onPointer(e.clientX);
           }}
@@ -350,6 +400,19 @@ const TimelineUI = ({
             snapOnRelease();
             if (onScrubEnd) onScrubEnd(toTime(targetXRef.current));
           }}
+          onKeyDown={(e) => {
+            if (e.key === "Backspace" && selected) {
+              const k = selected.type;
+              const id = selected.id;
+              const src = (k === "clip" ? clipBlocks : k === "zoom" ? zoomBlocks : avatarBlocks) || [];
+              const next = id ? src.filter((x) => x.id !== id) : [];
+              if (k === "clip" && onClipChange) onClipChange(next);
+              if (k === "zoom" && onZoomChange) onZoomChange(next);
+              if (k === "avatar" && onAvatarChange) onAvatarChange(next);
+              e.preventDefault();
+            }
+          }}
+          tabIndex={0}
         >
           <div className="h-9 border-b border-white/10 bg-slate-900/60 flex items-end px-4 relative">
             <div className="w-full flex justify-between text-[11px] text-slate-400">
@@ -394,6 +457,17 @@ const TimelineUI = ({
                   className="absolute left-1/2 -translate-x-1/2 -bottom-1 h-0 w-0 border-t-8 border-t-cyan-400 border-x-8 border-x-transparent"
                 />
               </div>
+            </div>
+          ) : null}
+          {ctxMenu ? (
+            <div
+              className="absolute z-30 bg-slate-900/95 text-white rounded-md shadow-lg border border-white/10"
+              style={{ left: ctxMenu.x, top: ctxMenu.y, transform: "translate(-50%, -50%)" }}
+            >
+              <button className="block px-3 py-1.5 hover:bg-slate-800 w-full text-left" onClick={() => handleDelete(ctxMenu.kind, ctxMenu.id)}>删除</button>
+              <button className="block px-3 py-1.5 hover:bg-slate-800 w-full text-left" onClick={() => handleCopy(ctxMenu.kind, ctxMenu.id)}>复制</button>
+              <button className="block px-3 py-1.5 hover:bg-slate-800 w-full text-left" onClick={() => handleSplit(ctxMenu.kind, ctxMenu.id)}>拆分</button>
+              <button className="block px-3 py-1.5 hover:bg-slate-800 w-full text-left" onClick={() => setCtxMenu(null)}>取消</button>
             </div>
           ) : null}
         </div>
