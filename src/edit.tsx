@@ -375,7 +375,7 @@ const EditPage = () => {
         setEditShadow(state.shadow);
         setCameraSize(
           aspect === "9:16"
-            ? (typeof state.camera_size === "number" && state.camera_size > 0 ? state.camera_size : 84)
+            ? (typeof state.camera_size === "number" && state.camera_size >= 120 ? state.camera_size : 120)
             : state.camera_size
         );
         setCameraShape(cameraShapeValue);
@@ -393,10 +393,10 @@ const EditPage = () => {
   }, [outputPath]);
 
   useEffect(() => {
-    if (editAspect === "9:16" && cameraSize === 168) {
-      setCameraSize(84);
+    if (editAspect === "9:16" && cameraSize < 120) {
+      setCameraSize(120);
     }
-  }, [editAspect]);
+  }, [editAspect, cameraSize]);
   useEffect(() => {
     const video = previewVideoRef.current;
     if (!video) {
@@ -1342,10 +1342,10 @@ const EditPage = () => {
                     <input
                       className="mt-2 w-full"
                       type="range"
-                      min={editAspect === "9:16" ? 84 : 120}
-                      max={editAspect === "9:16" ? 296 : 320}
+                      min={120}
+                      max={320}
                       step={2}
-                      value={Math.max(editAspect === "9:16" ? 84 : 120, cameraSize)}
+                      value={Math.max(120, cameraSize)}
                       onChange={(event) => setCameraSize(Number(event.target.value))}
                     />
                   </div>

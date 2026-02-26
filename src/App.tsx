@@ -362,7 +362,7 @@ function MainApp() {
       await existing.setSize(new PhysicalSize(1600, 900));
       await existing.show();
       await existing.setFocus();
-      await getCurrentWindow().hide();
+      await getCurrentWindow().minimize();
       return;
     }
     new WebviewWindow("edit", {
@@ -375,7 +375,7 @@ function MainApp() {
       skipTaskbar: false,
       title: "Edit",
     });
-    await getCurrentWindow().hide();
+    await getCurrentWindow().minimize();
   };
 
   const startRecording = async (options?: {
