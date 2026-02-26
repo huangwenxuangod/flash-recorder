@@ -42,6 +42,9 @@ importers:
         specifier: ^5.5.0
         version: 5.5.0(react@19.2.4)
     devDependencies:
+      '@tailwindcss/oxide-win32-x64-msvc':
+        specifier: ^4.2.1
+        version: 4.2.1
       '@tailwindcss/vite':
         specifier: ^4.2.1
         version: 4.2.1(vite@6.4.1(jiti@2.6.1)(lightningcss@1.31.1)(yaml@2.8.2))
@@ -60,6 +63,9 @@ importers:
       cross-env:
         specifier: ^7.0.3
         version: 7.0.3
+      lightningcss-win32-x64-msvc:
+        specifier: ^1.31.1
+        version: 1.31.1
       tailwindcss:
         specifier: ^4.2.1
         version: 4.2.1
@@ -69,13 +75,6 @@ importers:
       vite:
         specifier: ^6.2.0
         version: 6.4.1(jiti@2.6.1)(lightningcss@1.31.1)(yaml@2.8.2)
-    optionalDependencies:
-      '@tailwindcss/oxide-win32-x64-msvc':
-        specifier: ^4.2.1
-        version: 4.2.1
-      lightningcss-win32-x64-msvc:
-        specifier: ^1.31.1
-        version: 1.31.1
 
 packages:
 
@@ -4685,8 +4684,7 @@ snapshots:
   '@tailwindcss/oxide-win32-arm64-msvc@4.2.1':
     optional: true
 
-  '@tailwindcss/oxide-win32-x64-msvc@4.2.1':
-    optional: true
+  '@tailwindcss/oxide-win32-x64-msvc@4.2.1': {}
 
   '@tailwindcss/oxide@4.2.1':
     optionalDependencies:
@@ -4996,8 +4994,7 @@ snapshots:
   lightningcss-win32-arm64-msvc@1.31.1:
     optional: true
 
-  lightningcss-win32-x64-msvc@1.31.1:
-    optional: true
+  lightningcss-win32-x64-msvc@1.31.1: {}
 
   lightningcss@1.31.1:
     dependencies:
