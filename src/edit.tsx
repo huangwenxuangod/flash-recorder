@@ -373,8 +373,8 @@ const EditPage = () => {
     const totalFrames = Math.max(1, Math.round(duration * fps));
     const frames: ZoomFrame[] = [];
     const rampIn = 0.4;
-    const rampOut = 0.4;
-    const zoomMax = editAspect === "9:16" ? 3.0 : 2.0;
+    const rampOut = editAspect === "9:16" ? 0 : 0.4;
+    const zoomMax = editAspect === "9:16" ? 2.0 : 2.0;
     const ease = (u: number) => 1 + (zoomMax - 1) * (1 - Math.pow(1 - Math.max(0, Math.min(1, u)), 3));
     let cursorIndex = 0;
     let currentAxn = 0.5;
@@ -787,6 +787,8 @@ const EditPage = () => {
   const previewFrameWidth = evenize(Math.round(previewFrameHeight * previewAspect));
   const MARGIN_LR_169 = 0.06;
   const MARGIN_TB_916 = 0.36;
+  const ZOOM_MARGIN_TOP_916 = 0.1;
+  const ZOOM_MARGIN_BOTTOM_916 = 0.2;
   const MARGIN_TB_11 = 0.24;
   const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
   const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -1038,10 +1040,25 @@ const EditPage = () => {
       zoomProgressRef.current = easedProgress;
       setZoomProgress(easedProgress);
     }
-    const renderZoom = editAspect === "9:16" ? lerp(1, 3, easedProgress) : z;
+    const renderZoom = z;
     const renderAxn = editAspect === "9:16" ? 0.5 : axn;
     const renderAyn = editAspect === "9:16" ? 0.5 : ayn;
-    const safeRect = safeRectForAspect();
+    const baseSafe = safeRectForAspect();
+    const safeRect =
+      editAspect === "9:16"
+        ? (() => {
+            const baseTop = baseSafe.y;
+            const baseBottom = 1 - baseSafe.y - baseSafe.h;
+            const zoomTop = lerp(baseTop, ZOOM_MARGIN_TOP_916, easedProgress);
+            const zoomBottom = lerp(baseBottom, ZOOM_MARGIN_BOTTOM_916, easedProgress);
+            return {
+              x: baseSafe.x,
+              y: zoomTop,
+              w: baseSafe.w,
+              h: Math.max(0, 1 - zoomTop - zoomBottom),
+            };
+          })()
+        : baseSafe;
     const safeX = Math.round(safeRect.x * cw);
     const safeY = Math.round(safeRect.y * ch);
     const safeW = Math.max(1, Math.round(safeRect.w * cw));

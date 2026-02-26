@@ -697,15 +697,37 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
             let mut y_expr = y_expr.to_string();
             if edit_state.aspect.as_str() == "9:16" {
                 let base = z_expr.clone();
-                let z_effective = format!("(1+(3-1)*({p}))", p = p_expr);
+                let z_effective = format!("(1+(2-1)*({p}))", p = p_expr);
                 x_expr = format!("(iw/2 - (iw/({}))/2)", z_effective);
                 y_expr = format!("(ih/2 - (ih/({}))/2)", z_effective);
                 z_expr = z_effective;
             }
-            let safe_x_expr = format!("({}*iw)", safe_x);
-            let safe_y_expr = format!("({}*ih)", safe_y);
-            let safe_w_expr = format!("({}*iw)", safe_w);
-            let safe_h_expr = format!("({}*ih)", safe_h);
+            let (safe_x_expr, safe_y_expr, safe_w_expr, safe_h_expr) = if edit_state.aspect.as_str() == "9:16" {
+                let top = 0.10f32;
+                let bottom = 0.20f32;
+                let base_top = safe_y;
+                let base_bottom = (1.0 - safe_y - safe_h).max(0.0);
+                (
+                    format!("({}*iw)", safe_x),
+                    format!("(({}*(1-({p}))+{}*({p}))*ih)", base_top, top, p = p_expr),
+                    format!("({}*iw)", safe_w),
+                    format!(
+                        "((1-(({}*(1-({p}))+{}*({p}))+({}*(1-({p}))+{}*({p}))))*ih)",
+                        base_top,
+                        top,
+                        base_bottom,
+                        bottom,
+                        p = p_expr
+                    ),
+                )
+            } else {
+                (
+                    format!("({}*iw)", safe_x),
+                    format!("({}*ih)", safe_y),
+                    format!("({}*iw)", safe_w),
+                    format!("({}*ih)", safe_h),
+                )
+            };
             let safe_max_x = format!(
                 "max({min},{min}+{sw}-iw/({z}))",
                 min = safe_x_expr,
