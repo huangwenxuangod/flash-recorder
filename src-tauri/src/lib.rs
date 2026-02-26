@@ -270,10 +270,33 @@ struct ZoomFrame {
     zoom: f32,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+struct ZoomSettings {
+    max_zoom: f32,
+    ramp_in_s: f64,
+    ramp_out_s: f64,
+    sample_ms: u32,
+    follow_threshold_px: f32,
+}
+
+impl Default for ZoomSettings {
+    fn default() -> Self {
+        Self {
+            max_zoom: 2.0,
+            ramp_in_s: 0.5,
+            ramp_out_s: 0.5,
+            sample_ms: 120,
+            follow_threshold_px: 80.0,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct ZoomTrack {
     fps: u32,
     frames: Vec<ZoomFrame>,
+    #[serde(default)]
+    settings: Option<ZoomSettings>,
 }
 
 fn write_error_log(output_dir: &PathBuf, message: &str) {
@@ -643,6 +666,7 @@ fn derive_zoom_override(input_path: &str) -> Option<(String, String, String)> {
     if track.frames.is_empty() {
         return None;
     }
+    let settings = track.settings.clone().unwrap_or_default();
     let mut windows: Vec<(f64, f64)> = Vec::new();
     let mut i = 0usize;
     let n = track.frames.len();
@@ -667,15 +691,14 @@ fn derive_zoom_override(input_path: &str) -> Option<(String, String, String)> {
     }
     let mut z_expr = String::from("1");
     for (s, e) in windows.iter() {
-        let ramp = 0.5f64;
-        let up = format!("(1+(2-1)*(1-pow(1-((time-{s})/{r})),3)))", s = s, r = ramp);
-        let flat = String::from("2");
-        let down = format!("(1+(2-1)*(1-pow(1-(({e}-time)/{r})),3)))", e = e, r = ramp);
+        let up = format!("(1+({mz}-1)*(1-pow(1-((time-{s})/{r} ),3)))", mz = settings.max_zoom, s = s, r = settings.ramp_in_s.max(1e-6));
+        let flat = format!("{}", settings.max_zoom);
+        let down = format!("(1+({mz}-1)*(1-pow(1-(({e}-time)/{r}),3)))", mz = settings.max_zoom, e = e, r = settings.ramp_out_s.max(1e-6));
         let expr = format!(
             "if(between(time,{s},{s_up}),{up},if(between(time,{s_up},{e_dn}),{flat},if(between(time,{e_dn},{e}),{down},{fallback})))",
             s = s,
-            s_up = s + ramp,
-            e_dn = e - ramp,
+            s_up = s + settings.ramp_in_s,
+            e_dn = e - settings.ramp_out_s,
             e = e,
             up = up,
             flat = flat,
@@ -1894,7 +1917,7 @@ fn ensure_zoom_track(input_path: String) -> Result<String, String> {
                 zoom: 1.0,
             })
             .collect();
-        let track = ZoomTrack { fps, frames };
+        let track = ZoomTrack { fps, frames, settings: Some(ZoomSettings::default()) };
         fs::write(&path, serde_json::to_string(&track).map_err(|_| "track_serialize_failed")?)
             .map_err(|_| "track_write_failed")?;
         return Ok(path.to_string_lossy().to_string());
@@ -2024,7 +2047,7 @@ fn ensure_zoom_track(input_path: String) -> Result<String, String> {
             zoom,
         });
     }
-    let track = ZoomTrack { fps, frames };
+    let track = ZoomTrack { fps, frames, settings: Some(ZoomSettings::default()) };
     fs::write(&path, serde_json::to_string(&track).map_err(|_| "track_serialize_failed")?)
         .map_err(|_| "track_write_failed")?;
     Ok(path.to_string_lossy().to_string())

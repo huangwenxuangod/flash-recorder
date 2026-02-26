@@ -6,8 +6,9 @@ import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
 import { FiCamera, FiUser, FiImage, FiPause, FiPlay, FiSliders, FiFolder } from "react-icons/fi";
 import { Toaster, toast } from "react-hot-toast";
 import "./App.css";
+
 import { SelectMenu, type SelectOption } from "./components/SelectMenu";
-import { Switch } from "@headlessui/react";
+import { Switch, Tab } from "@headlessui/react";
 import { motion } from "framer-motion";
 
 const SETTINGS_EXPORT_DIR = "settingsExportDir";
@@ -21,6 +22,23 @@ type ZoomFrame = {
 type ZoomTrack = {
   fps: number;
   frames: ZoomFrame[];
+};
+
+type ZoomSettings = {
+  max_zoom: number;
+  ramp_in_s: number;
+  ramp_out_s: number;
+  sample_ms: number;
+  follow_threshold_px: number;
+};
+type ZoomSegment = {
+  id: string;
+  start_s: number;
+  end_s: number;
+  max_zoom?: number;
+  ramp_in_s?: number;
+  ramp_out_s?: number;
+  anchors: Array<{ t_s: number; axn: number; ayn: number }>;
 };
 
 type EditState = {
@@ -106,6 +124,16 @@ const EditPage = () => {
   const realtimeFrameRef = useRef<ZoomFrame | null>(null);
   const smoothAxnRef = useRef<number | null>(null);
   const smoothAynRef = useRef<number | null>(null);
+  const [zoomSettings, setZoomSettings] = useState<ZoomSettings>({
+    max_zoom: 2,
+    ramp_in_s: 0.5,
+    ramp_out_s: 0.5,
+    sample_ms: 120,
+    follow_threshold_px: 80,
+  });
+  const [zoomEditSegments, setZoomEditSegments] = useState<ZoomSegment[]>([]);
+  const [selectedZoomSegId, setSelectedZoomSegId] = useState<string | null>(null);
+  const [anchorAddMode, setAnchorAddMode] = useState(false);
   const zoomSegments = useMemo(() => {
     const segs: Array<{ s: number; e: number }> = [];
     if (zoomTrack && zoomTrack.frames.length) {
@@ -200,6 +228,123 @@ const EditPage = () => {
       .catch(() => setZoomTrack(null));
   }, [outputPath]);
 
+  const importSegmentsFromTrack = () => {
+    if (!zoomTrack || !zoomTrack.frames.length || previewDuration <= 0) {
+      setZoomEditSegments([]);
+      setSelectedZoomSegId(null);
+      return;
+    }
+    const frames = zoomTrack.frames;
+    const segs: ZoomSegment[] = [];
+    let i = 0;
+    const n = frames.length;
+    while (i < n) {
+      while (i < n && frames[i].zoom <= 1.0001) i++;
+      if (i >= n) break;
+      const s = frames[i].time_ms / 1000;
+      let j = i;
+      while (j < n && frames[j].zoom > 1.0001) j++;
+      const e = frames[Math.max(i, j - 1)].time_ms / 1000;
+      const anchors: Array<{ t_s: number; axn: number; ayn: number }> = [];
+      const step = Math.max(zoomSettings.sample_ms, 20);
+      let t = Math.round(frames[i].time_ms / step) * step;
+      while (t <= frames[Math.max(i, j - 1)].time_ms) {
+        const f =
+          sampleZoom(t) ||
+          frames[Math.max(0, Math.min(n - 1, Math.floor((t / 1000) * (zoomTrack.fps || 30))))];
+        anchors.push({ t_s: t / 1000, axn: f.axn, ayn: f.ayn });
+        t += step;
+        if (anchors.length > 1200) break;
+      }
+      segs.push({
+        id: `seg-${segs.length + 1}`,
+        start_s: s,
+        end_s: e,
+        anchors,
+        max_zoom: zoomSettings.max_zoom,
+      });
+      i = j;
+      if (segs.length > 100) break;
+    }
+    setZoomEditSegments(segs);
+    setSelectedZoomSegId(segs.length ? segs[0].id : null);
+  };
+  const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
+  const generateTrackFromSegments = (duration: number, fps: number): ZoomTrack => {
+    const total = Math.ceil(duration * fps);
+    const frames: ZoomFrame[] = new Array(total + 1);
+    for (let i = 0; i <= total; i++) {
+      const t = i / fps;
+      let axn = 0.5;
+      let ayn = 0.5;
+      let zoom = 1.0;
+      for (const seg of zoomEditSegments) {
+        if (t < seg.start_s || t > seg.end_s) continue;
+        const mz = seg.max_zoom ?? zoomSettings.max_zoom;
+        const rin = seg.ramp_in_s ?? zoomSettings.ramp_in_s;
+        const rout = seg.ramp_out_s ?? zoomSettings.ramp_out_s;
+        if (t >= seg.start_s && t < seg.start_s + rin) {
+          const u = (t - seg.start_s) / Math.max(rin, 1e-6);
+          zoom = 1 + (mz - 1) * (1 - Math.pow(1 - u, 3));
+        } else if (t > seg.end_s - rout && t <= seg.end_s) {
+          const u = (seg.end_s - t) / Math.max(rout, 1e-6);
+          zoom = 1 + (mz - 1) * (1 - Math.pow(1 - u, 3));
+        } else {
+          zoom = mz;
+        }
+        const anchors = seg.anchors.length
+          ? seg.anchors
+          : [
+              { t_s: seg.start_s, axn: 0.5, ayn: 0.5 },
+              { t_s: seg.end_s, axn: 0.5, ayn: 0.5 },
+            ];
+        let ax = anchors[0].axn;
+        let ay = anchors[0].ayn;
+        for (let k = 0; k < anchors.length - 1; k++) {
+          const a0 = anchors[k];
+          const a1 = anchors[k + 1];
+          if (t >= a0.t_s && t <= a1.t_s) {
+            const dt = Math.max(a1.t_s - a0.t_s, 1e-6);
+            const u = (t - a0.t_s) / dt;
+            ax = a0.axn * (1 - u) + a1.axn * u;
+            ay = a0.ayn * (1 - u) + a1.ayn * u;
+            break;
+          } else if (t > a1.t_s) {
+            ax = a1.axn;
+            ay = a1.ayn;
+          }
+        }
+        axn = clamp01(ax);
+        ayn = clamp01(ay);
+        break;
+      }
+      frames[i] = { time_ms: Math.round(t * 1000), axn, ayn, zoom };
+    }
+    return { fps, frames };
+  };
+  const saveZoomEdits = async () => {
+    if (!outputPath || previewDuration <= 0) return;
+    const fps = 30;
+    const track = generateTrackFromSegments(previewDuration, fps);
+    const payload = {
+      fps: track.fps,
+      frames: track.frames,
+      settings: zoomSettings,
+    };
+    try {
+      const path = await invoke<string>("save_zoom_track", {
+        inputPath: outputPath,
+        trackJson: JSON.stringify(payload),
+      });
+      const url = convertFileSrc(path);
+      const res = await fetch(url);
+      const data = await res.json();
+      setZoomTrack(data as ZoomTrack);
+      toast.success("已保存 Zoom 轨道");
+    } catch {
+      toast.error("保存失败");
+    }
+  };
   useEffect(() => {
     if (!outputPath) {
       return;
@@ -392,7 +537,7 @@ const EditPage = () => {
       }
       const areaRect = area.getBoundingClientRect();
       const sectionRect = section.getBoundingClientRect();
-      const offsetY = 8;
+      const offsetY = 14;
       const left =
         Math.round(areaRect.left + areaRect.width / 2) - Math.round(sectionRect.left);
       const top = Math.round(areaRect.bottom + offsetY) - Math.round(sectionRect.top);
@@ -825,9 +970,24 @@ const EditPage = () => {
                   <div
                     className="relative h-full w-full overflow-hidden rounded-2xl"
                     ref={previewContentRef}
-                    onClick={() => {
+                    onClick={(e) => {
                       const container = previewContentRef.current;
                       if (!container) return;
+                      if (anchorAddMode && selectedZoomSegId) {
+                        const rect = container.getBoundingClientRect();
+                        const nx = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+                        const ny = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
+                        setZoomEditSegments((prev) =>
+                          prev.map((seg) =>
+                            seg.id === selectedZoomSegId
+                              ? { ...seg, anchors: [...seg.anchors, { t_s: previewTime, axn: nx, ayn: ny }].sort((a, b) => a.t_s - b.t_s) }
+                              : seg
+                          )
+                        );
+                        setAnchorAddMode(false);
+                        toast.success("已添加锚点");
+                        return;
+                      }
                       setAvatarScale(0.7);
                     }}
                     onDoubleClick={() => {
@@ -958,44 +1118,153 @@ const EditPage = () => {
                 onPointerCancel={endScrub}
                 disabled={previewControlsDisabled}
                 className="h-1.5 w-full cursor-pointer accent-cyan-400"
-                style={{ marginTop: 28 }}
+                style={{ marginTop: 32 }}
               />
             </div>
             {previewDuration > 0 ? (
               <div className="w-full px-3 py-2">
-                <div className="relative w-full rounded-xl border border-white/10 bg-slate-950/60">
-                  <div className="relative h-9 w-full">
-                    {Array.from({ length: Math.ceil(previewDuration) + 1 }).map((_, i) => (
-                      <div
-                        key={`tick-${i}`}
-                        className="absolute top-0 h-full w-px bg-white/10"
-                        style={{ left: `${(i / Math.max(previewDuration, 0.001)) * 100}%` }}
-                      />
-                    ))}
-                    <div className="absolute left-2 top-1/2 -translate-y-1/2 rounded-md bg-blue-600/80 px-2 py-1 text-[10px] text-white">
-                      Clip
+                <Tab.Group>
+                  <Tab.List className="mb-2 flex gap-2">
+                    <Tab
+                      className={({ selected }) =>
+                        `rounded-full border px-3 py-1 text-[11px] transition ${
+                          selected
+                            ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
+                            : "border-white/10 bg-slate-950/70 text-slate-200 hover:border-cyan-400/50"
+                        }`
+                      }
+                    >
+                      Clip 轨
+                    </Tab>
+                    <Tab
+                      className={({ selected }) =>
+                        `rounded-full border px-3 py-1 text-[11px] transition ${
+                          selected
+                            ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
+                            : "border-white/10 bg-slate-950/70 text-slate-200 hover:border-cyan-400/50"
+                        }`
+                      }
+                    >
+                      Zoom 轨
+                    </Tab>
+                  </Tab.List>
+                  <Tab.Panels>
+                    <Tab.Panel>
+                      <div className="relative w-full rounded-xl border border-white/10 bg-slate-950/60">
+                        <div className="relative h-9 w-full">
+                          {Array.from({ length: Math.ceil(previewDuration) + 1 }).map((_, i) => (
+                            <div
+                              key={`tick-${i}`}
+                              className="absolute top-0 h-full w-px bg-white/10"
+                              style={{ left: `${(i / Math.max(previewDuration, 0.001)) * 100}%` }}
+                            />
+                          ))}
+                          <div className="absolute left-2 top-1/2 -translate-y-1/2 rounded-md bg-blue-600/80 px-2 py-1 text-[10px] text-white">
+                            Clip
+                          </div>
+                          <div className="absolute left-8 right-2 top-1/2 h-4 -translate-y-1/2 rounded-md bg-blue-500/40" />
+                        </div>
+                      </div>
+                    </Tab.Panel>
+                    <Tab.Panel>
+                      <div className="relative w-full rounded-xl border border-white/10 bg-slate-950/60">
+                        <div className="relative h-9 w-full">
+                          {Array.from({ length: Math.ceil(previewDuration) + 1 }).map((_, i) => (
+                            <div
+                              key={`tick2-${i}`}
+                              className="absolute top-0 h-full w-px bg-white/10"
+                              style={{ left: `${(i / Math.max(previewDuration, 0.001)) * 100}%` }}
+                            />
+                          ))}
+                          <div className="absolute left-2 top-1/2 -translate-y-1/2 rounded-md bg-pink-600/80 px-2 py-1 text-[10px] text-white">
+                            Zoom
+                          </div>
+                          <div className="absolute left-8 right-2 top-1/2 h-4 -translate-y-1/2 rounded-md bg-pink-500/20" />
+                          {zoomSegments.map((seg, idx) => {
+                            const left = Math.min(100, Math.max(0, (seg.s / previewDuration) * 100));
+                            const right = Math.min(100, Math.max(0, (seg.e / previewDuration) * 100));
+                            const width = Math.max(0, right - left);
+                            return (
+                              <div
+                                key={`zoom-seg-${idx}`}
+                                className="absolute top-1/2 h-4 -translate-y-1/2 rounded-md bg-pink-500/70"
+                                style={{ left: `${left}%`, width: `${width}%` }}
+                              />
+                            );
+                          })}
+                        </div>
+                      </div>
+                    <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                      <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3 text-xs">
+                        <div className="mb-2 text-[11px] uppercase tracking-[0.2em] text-slate-500">Zoom 设置</div>
+                        <div className="flex items-center justify-between"><span>最大放大</span><span>{zoomSettings.max_zoom.toFixed(2)}x</span></div>
+                        <input className="mt-2 w-full" type="range" min={1} max={8} step={0.1} value={zoomSettings.max_zoom} onChange={(e) => setZoomSettings({ ...zoomSettings, max_zoom: Number(e.target.value) })} />
+                        <div className="mt-3 flex items-center justify-between"><span>缓入时长</span><span>{zoomSettings.ramp_in_s.toFixed(2)}s</span></div>
+                        <input className="mt-2 w-full" type="range" min={0} max={2} step={0.05} value={zoomSettings.ramp_in_s} onChange={(e) => setZoomSettings({ ...zoomSettings, ramp_in_s: Number(e.target.value) })} />
+                        <div className="mt-3 flex items-center justify-between"><span>缓出时长</span><span>{zoomSettings.ramp_out_s.toFixed(2)}s</span></div>
+                        <input className="mt-2 w-full" type="range" min={0} max={2} step={0.05} value={zoomSettings.ramp_out_s} onChange={(e) => setZoomSettings({ ...zoomSettings, ramp_out_s: Number(e.target.value) })} />
+                        <div className="mt-3 flex items-center justify-between"><span>采样间隔</span><span>{zoomSettings.sample_ms}ms</span></div>
+                        <input className="mt-2 w-full" type="range" min={40} max={240} step={10} value={zoomSettings.sample_ms} onChange={(e) => setZoomSettings({ ...zoomSettings, sample_ms: Number(e.target.value) })} />
+                        <div className="mt-3 flex gap-2">
+                          <button type="button" onClick={importSegmentsFromTrack} className="flex-1 rounded-full border px-2 py-1 border-white/10 bg-slate-950/60 text-slate-300">导入现有轨道</button>
+                          <button type="button" onClick={saveZoomEdits} className="flex-1 rounded-full border px-2 py-1 border-cyan-400/60 bg-cyan-400/10 text-cyan-200">保存轨道</button>
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3 text-xs">
+                        <div className="mb-2 flex items-center justify-between">
+                          <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Zoom 段</div>
+                          <div className="flex gap-2">
+                            <button type="button" onClick={() => {
+                              const s = Math.max(0, Math.floor(previewTime));
+                              const e = Math.min(previewDuration, s + 2);
+                              const seg: ZoomSegment = { id: `seg-${Date.now()}`, start_s: s, end_s: e, anchors: [{ t_s: s, axn: 0.5, ayn: 0.5 }, { t_s: e, axn: 0.5, ayn: 0.5 }], max_zoom: zoomSettings.max_zoom };
+                              setZoomEditSegments([...zoomEditSegments, seg]);
+                              setSelectedZoomSegId(seg.id);
+                            }} className="rounded-full border px-2 py-1 border-white/10 bg-slate-950/60 text-slate-300">新增段</button>
+                            <button type="button" onClick={() => {
+                              if (!selectedZoomSegId) return;
+                              setZoomEditSegments(zoomEditSegments.filter(s => s.id !== selectedZoomSegId));
+                              setSelectedZoomSegId(null);
+                            }} className="rounded-full border px-2 py-1 border-white/10 bg-slate-950/60 text-slate-300">删除段</button>
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          {zoomEditSegments.map(seg => (
+                            <div key={seg.id} className={`rounded-lg border px-2 py-2 ${selectedZoomSegId === seg.id ? "border-cyan-400/60" : "border-white/10"}`} onClick={() => setSelectedZoomSegId(seg.id)}>
+                              <div className="flex items-center gap-2">
+                                <div className="flex-1">
+                                  <div className="flex items-center justify-between"><span>Start</span><span>{seg.start_s.toFixed(2)}s</span></div>
+                                  <input className="mt-1 w-full" type="range" min={0} max={previewDuration} step={0.05} value={seg.start_s} onChange={(e) => {
+                                    const v = Number(e.target.value);
+                                    setZoomEditSegments(zoomEditSegments.map(s => s.id === seg.id ? { ...s, start_s: Math.min(v, s.end_s - 0.1) } : s));
+                                  }} />
+                                </div>
+                                <div className="flex-1">
+                                  <div className="flex items-center justify-between"><span>End</span><span>{seg.end_s.toFixed(2)}s</span></div>
+                                  <input className="mt-1 w-full" type="range" min={seg.start_s + 0.1} max={previewDuration} step={0.05} value={seg.end_s} onChange={(e) => {
+                                    const v = Number(e.target.value);
+                                    setZoomEditSegments(zoomEditSegments.map(s => s.id === seg.id ? { ...s, end_s: Math.max(v, s.start_s + 0.1) } : s));
+                                  }} />
+                                </div>
+                              </div>
+                              <div className="mt-2 flex items-center justify-between"><span>Max Zoom</span><span>{(seg.max_zoom ?? zoomSettings.max_zoom).toFixed(2)}x</span></div>
+                              <input className="mt-1 w-full" type="range" min={1} max={8} step={0.1} value={seg.max_zoom ?? zoomSettings.max_zoom} onChange={(e) => {
+                                const v = Number(e.target.value);
+                                setZoomEditSegments(zoomEditSegments.map(s => s.id === seg.id ? { ...s, max_zoom: v } : s));
+                              }} />
+                              <div className="mt-2 flex items-center justify-between">
+                                <button type="button" onClick={() => setAnchorAddMode(true)} className="rounded-full border px-2 py-1 border-white/10 bg-slate-950/60 text-slate-300">添加锚点</button>
+                                <div className="text-[11px] text-slate-500">在预览中点击添加（当前时间）</div>
+                              </div>
+                            </div>
+                          ))}
+                          {!zoomEditSegments.length ? <div className="rounded-lg border border-white/10 px-2 py-3 text-center text-slate-400">暂无段，点击“新增段”开始</div> : null}
+                        </div>
+                      </div>
                     </div>
-                    <div className="absolute left-8 right-2 top-1/2 h-4 -translate-y-1/2 rounded-md bg-blue-500/40" />
-                  </div>
-                  <div className="relative h-9 w-full mt-1">
-                    <div className="absolute left-2 top-1/2 -translate-y-1/2 rounded-md bg-pink-600/80 px-2 py-1 text-[10px] text-white">
-                      Zoom
-                    </div>
-                    <div className="absolute left-8 right-2 top-1/2 h-4 -translate-y-1/2 rounded-md bg-pink-500/20" />
-                    {zoomSegments.map((seg, idx) => {
-                      const left = Math.min(100, Math.max(0, (seg.s / previewDuration) * 100));
-                      const right = Math.min(100, Math.max(0, (seg.e / previewDuration) * 100));
-                      const width = Math.max(0, right - left);
-                      return (
-                        <div
-                          key={`zoom-seg-${idx}`}
-                          className="absolute top-1/2 h-4 -translate-y-1/2 rounded-md bg-pink-500/70"
-                          style={{ left: `${left}%`, width: `${width}%` }}
-                        />
-                      );
-                    })}
-                  </div>
-                </div>
+                    </Tab.Panel>
+                  </Tab.Panels>
+                </Tab.Group>
               </div>
             ) : null}
             <Toaster position="top-center" toastOptions={{ duration: 1600 }} />
