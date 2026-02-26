@@ -8,7 +8,6 @@ import { Toaster, toast } from "react-hot-toast";
 import "./App.css";
 
 import { SelectMenu, type SelectOption } from "./components/SelectMenu";
-import { Switch, Tab } from "@headlessui/react";
 import { motion } from "framer-motion";
 
 const SETTINGS_EXPORT_DIR = "settingsExportDir";
@@ -109,6 +108,7 @@ const EditPage = () => {
   const avatarVideoRef = useRef<HTMLVideoElement | null>(null);
   const [previewDuration, setPreviewDuration] = useState(0);
   const [previewTime, setPreviewTime] = useState(0);
+  const [trackTab, setTrackTab] = useState<"clip" | "zoom">("clip");
   const [previewPlaying, setPreviewPlaying] = useState(false);
   const wasPlayingRef = useRef(false);
   const isScrubbingRef = useRef(false);
@@ -1126,77 +1126,75 @@ const EditPage = () => {
             </div>
             {previewDuration > 0 ? (
               <div className="w-full px-3 py-2">
-                <Tab.Group>
-                  <Tab.List className="mb-2 flex gap-2">
-                    <Tab
-                      className={({ selected }) =>
-                        `rounded-full border px-3 py-1 text-[11px] transition ${
-                          selected
-                            ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
-                            : "border-white/10 bg-slate-950/70 text-slate-200 hover:border-cyan-400/50"
-                        }`
-                      }
-                    >
-                      Clip 轨
-                    </Tab>
-                    <Tab
-                      className={({ selected }) =>
-                        `rounded-full border px-3 py-1 text-[11px] transition ${
-                          selected
-                            ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
-                            : "border-white/10 bg-slate-950/70 text-slate-200 hover:border-cyan-400/50"
-                        }`
-                      }
-                    >
-                      Zoom 轨
-                    </Tab>
-                  </Tab.List>
-                  <Tab.Panels>
-                    <Tab.Panel>
-                      <div className="relative w-full rounded-xl border border-white/10 bg-slate-950/60">
-                        <div className="relative h-9 w-full">
-                          {Array.from({ length: Math.ceil(previewDuration) + 1 }).map((_, i) => (
-                            <div
-                              key={`tick-${i}`}
-                              className="absolute top-0 h-full w-px bg-white/10"
-                              style={{ left: `${(i / Math.max(previewDuration, 0.001)) * 100}%` }}
-                            />
-                          ))}
-                          <div className="absolute left-2 top-1/2 -translate-y-1/2 rounded-md bg-blue-600/80 px-2 py-1 text-[10px] text-white">
-                            Clip
-                          </div>
-                          <div className="absolute left-8 right-2 top-1/2 h-4 -translate-y-1/2 rounded-md bg-blue-500/40" />
-                        </div>
+                <div className="mb-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTrackTab("clip")}
+                    className={`rounded-full border px-3 py-1 text-[11px] transition ${
+                      trackTab === "clip"
+                        ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
+                        : "border-white/10 bg-slate-950/70 text-slate-200 hover:border-cyan-400/50"
+                    }`}
+                  >
+                    Clip 轨
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTrackTab("zoom")}
+                    className={`rounded-full border px-3 py-1 text-[11px] transition ${
+                      trackTab === "zoom"
+                        ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-200"
+                        : "border-white/10 bg-slate-950/70 text-slate-200 hover:border-cyan-400/50"
+                    }`}
+                  >
+                    Zoom 轨
+                  </button>
+                </div>
+                {trackTab === "clip" ? (
+                  <div className="relative w-full rounded-xl border border-white/10 bg-slate-950/60">
+                    <div className="relative h-9 w-full">
+                      {Array.from({ length: Math.ceil(previewDuration) + 1 }).map((_, i) => (
+                        <div
+                          key={`tick-${i}`}
+                          className="absolute top-0 h-full w-px bg-white/10"
+                          style={{ left: `${(i / Math.max(previewDuration, 0.001)) * 100}%` }}
+                        />
+                      ))}
+                      <div className="absolute left-2 top-1/2 -translate-y-1/2 rounded-md bg-blue-600/80 px-2 py-1 text-[10px] text-white">
+                        Clip
                       </div>
-                    </Tab.Panel>
-                    <Tab.Panel>
-                      <div className="relative w-full rounded-xl border border-white/10 bg-slate-950/60">
-                        <div className="relative h-9 w-full">
-                          {Array.from({ length: Math.ceil(previewDuration) + 1 }).map((_, i) => (
-                            <div
-                              key={`tick2-${i}`}
-                              className="absolute top-0 h-full w-px bg-white/10"
-                              style={{ left: `${(i / Math.max(previewDuration, 0.001)) * 100}%` }}
-                            />
-                          ))}
-                          <div className="absolute left-2 top-1/2 -translate-y-1/2 rounded-md bg-pink-600/80 px-2 py-1 text-[10px] text-white">
-                            Zoom
-                          </div>
-                          <div className="absolute left-8 right-2 top-1/2 h-4 -translate-y-1/2 rounded-md bg-pink-500/20" />
-                          {zoomSegments.map((seg, idx) => {
-                            const left = Math.min(100, Math.max(0, (seg.s / previewDuration) * 100));
-                            const right = Math.min(100, Math.max(0, (seg.e / previewDuration) * 100));
-                            const width = Math.max(0, right - left);
-                            return (
-                              <div
-                                key={`zoom-seg-${idx}`}
-                                className="absolute top-1/2 h-4 -translate-y-1/2 rounded-md bg-pink-500/70"
-                                style={{ left: `${left}%`, width: `${width}%` }}
-                              />
-                            );
-                          })}
+                      <div className="absolute left-8 right-2 top-1/2 h-4 -translate-y-1/2 rounded-md bg-blue-500/40" />
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="relative w-full rounded-xl border border-white/10 bg-slate-950/60">
+                      <div className="relative h-9 w-full">
+                        {Array.from({ length: Math.ceil(previewDuration) + 1 }).map((_, i) => (
+                          <div
+                            key={`tick2-${i}`}
+                            className="absolute top-0 h-full w-px bg-white/10"
+                            style={{ left: `${(i / Math.max(previewDuration, 0.001)) * 100}%` }}
+                          />
+                        ))}
+                        <div className="absolute left-2 top-1/2 -translate-y-1/2 rounded-md bg-pink-600/80 px-2 py-1 text-[10px] text-white">
+                          Zoom
                         </div>
+                        <div className="absolute left-8 right-2 top-1/2 h-4 -translate-y-1/2 rounded-md bg-pink-500/20" />
+                        {zoomSegments.map((seg, idx) => {
+                          const left = Math.min(100, Math.max(0, (seg.s / previewDuration) * 100));
+                          const right = Math.min(100, Math.max(0, (seg.e / previewDuration) * 100));
+                          const width = Math.max(0, right - left);
+                          return (
+                            <div
+                              key={`zoom-seg-${idx}`}
+                              className="absolute top-1/2 h-4 -translate-y-1/2 rounded-md bg-pink-500/70"
+                              style={{ left: `${left}%`, width: `${width}%` }}
+                            />
+                          );
+                        })}
                       </div>
+                    </div>
                     <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
                       <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3 text-xs">
                         <div className="mb-2 text-[11px] uppercase tracking-[0.2em] text-slate-500">Zoom 设置</div>
@@ -1204,7 +1202,7 @@ const EditPage = () => {
                         <input className="mt-2 w-full" type="range" min={1} max={8} step={0.1} value={zoomSettings.max_zoom} onChange={(e) => setZoomSettings({ ...zoomSettings, max_zoom: Number(e.target.value) })} />
                         <div className="mt-3 flex items-center justify-between"><span>缓入时长</span><span>{zoomSettings.ramp_in_s.toFixed(2)}s</span></div>
                         <input className="mt-2 w-full" type="range" min={0} max={2} step={0.05} value={zoomSettings.ramp_in_s} onChange={(e) => setZoomSettings({ ...zoomSettings, ramp_in_s: Number(e.target.value) })} />
-                        <div className="mt-3 flex items-center justify-between"><span>缓出时长</span><span>{zoomSettings.ramp_out_s.toFixed(2)}s</span></div>
+                        <div className="mt-3 flex items中心 justify-between"><span>缓出时长</span><span>{zoomSettings.ramp_out_s.toFixed(2)}s</span></div>
                         <input className="mt-2 w-full" type="range" min={0} max={2} step={0.05} value={zoomSettings.ramp_out_s} onChange={(e) => setZoomSettings({ ...zoomSettings, ramp_out_s: Number(e.target.value) })} />
                         <div className="mt-3 flex items-center justify-between"><span>采样间隔</span><span>{zoomSettings.sample_ms}ms</span></div>
                         <input className="mt-2 w-full" type="range" min={40} max={240} step={10} value={zoomSettings.sample_ms} onChange={(e) => setZoomSettings({ ...zoomSettings, sample_ms: Number(e.target.value) })} />
@@ -1214,7 +1212,7 @@ const EditPage = () => {
                         </div>
                       </div>
                       <div className="rounded-xl border border-white/10 bg-slate-950/60 p-3 text-xs">
-                        <div className="mb-2 flex items-center justify-between">
+                        <div className="mb-2 flex items-center justify之间">
                           <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Zoom 段</div>
                           <div className="flex gap-2">
                             <button type="button" onClick={() => {
@@ -1265,9 +1263,8 @@ const EditPage = () => {
                         </div>
                       </div>
                     </div>
-                    </Tab.Panel>
-                  </Tab.Panels>
-                </Tab.Group>
+                  </>
+                )}
               </div>
             ) : null}
             <Toaster position="top-center" toastOptions={{ duration: 1600 }} />
@@ -1381,27 +1378,31 @@ const EditPage = () => {
                   </div>
                   <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2">
                     <span>Mirror</span>
-                    <Switch
-                      checked={cameraMirror}
-                      onChange={setCameraMirror}
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={cameraMirror}
+                      onClick={() => setCameraMirror((v) => !v)}
                       className={`h-5 w-10 rounded-full border transition ${
                         cameraMirror ? "border-cyan-400/60 bg-cyan-400/30" : "border-white/10 bg-slate-900/80"
                       }`}
                     >
                       <span className={`block h-4 w-4 rounded-full bg-white transition ${cameraMirror ? "translate-x-5" : "translate-x-1"}`} />
-                    </Switch>
+                    </button>
                   </div>
                   <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2">
                     <span>Blur</span>
-                    <Switch
-                      checked={cameraBlur}
-                      onChange={setCameraBlur}
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={cameraBlur}
+                      onClick={() => setCameraBlur((v) => !v)}
                       className={`h-5 w-10 rounded-full border transition ${
                         cameraBlur ? "border-cyan-400/60 bg-cyan-400/30" : "border-white/10 bg-slate-900/80"
                       }`}
                     >
                       <span className={`block h-4 w-4 rounded-full bg-white transition ${cameraBlur ? "translate-x-5" : "translate-x-1"}`} />
-                    </Switch>
+                    </button>
                   </div>
                   <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2">
                     <span className="text-xs text-slate-400">相机位置</span>
@@ -1575,27 +1576,31 @@ const EditPage = () => {
                     </div>
                     <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2">
                       <span>Mirror</span>
-                      <Switch
-                        checked={cameraMirror}
-                        onChange={setCameraMirror}
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={cameraMirror}
+                        onClick={() => setCameraMirror((v) => !v)}
                         className={`h-5 w-10 rounded-full border transition ${
                           cameraMirror ? "border-cyan-400/60 bg-cyan-400/30" : "border-white/10 bg-slate-900/80"
                         }`}
                       >
                         <span className={`block h-4 w-4 rounded-full bg-white transition ${cameraMirror ? "translate-x-5" : "translate-x-1"}`} />
-                      </Switch>
+                      </button>
                     </div>
                     <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2">
                       <span>Blur</span>
-                      <Switch
-                        checked={cameraBlur}
-                        onChange={setCameraBlur}
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={cameraBlur}
+                        onClick={() => setCameraBlur((v) => !v)}
                         className={`h-5 w-10 rounded-full border transition ${
                           cameraBlur ? "border-cyan-400/60 bg-cyan-400/30" : "border-white/10 bg-slate-900/80"
                         }`}
                       >
                         <span className={`block h-4 w-4 rounded-full bg-white transition ${cameraBlur ? "translate-x-5" : "translate-x-1"}`} />
-                      </Switch>
+                      </button>
                     </div>
                     <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2">
                       <span className="text-xs text-slate-400">相机位置</span>
