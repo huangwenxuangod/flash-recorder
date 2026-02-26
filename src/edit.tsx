@@ -916,12 +916,6 @@ const EditPage = () => {
         ayn = f.ayn ?? 0.5;
       }
     }
-    if (realtimeFrameRef.current) {
-      const rf = realtimeFrameRef.current;
-      z = rf.zoom || z;
-      axn = typeof rf.axn === "number" ? rf.axn : axn;
-      ayn = typeof rf.ayn === "number" ? rf.ayn : ayn;
-    }
     const tz = z;
     const taxn = axn;
     const tayn = ayn;

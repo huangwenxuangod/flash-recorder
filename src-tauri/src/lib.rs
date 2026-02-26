@@ -1607,6 +1607,16 @@ fn start_recording(
         let cursor_path_clone = cursor_path.clone();
         let rect_clone = rect.clone();
         let app_clone = app.clone();
+        let track_path = output_dir.join("zoom_track.json");
+        let fps_unified: u32 = 30;
+        let sample_ms: u64 = ((1000.0 / (fps_unified as f64)).round()) as u64;
+        let settings = ZoomSettings {
+            max_zoom: 2.0,
+            ramp_in_s: 0.4,
+            ramp_out_s: 0.4,
+            sample_ms: 120,
+            follow_threshold_px: 160.0,
+        };
         thread::spawn(move || {
             #[cfg(target_os = "windows")]
             {
@@ -1619,6 +1629,9 @@ fn start_recording(
                     return;
                 }
                 let mut writer = BufWriter::new(file.unwrap());
+                let mut frames: Vec<ZoomFrame> = Vec::new();
+                let mut last_sample_ms: u64 = 0;
+                let mut last_flush_ms: u64 = 0;
                 let mut last_btn = false;
                 let mut last_axn = -1f32;
                 let mut last_ayn = -1f32;
@@ -1702,12 +1715,37 @@ fn start_recording(
                             zoom,
                         },
                     );
+                    if offset_ms >= last_sample_ms.saturating_add(sample_ms) {
+                        last_sample_ms = offset_ms;
+                        frames.push(ZoomFrame {
+                            time_ms: offset_ms,
+                            axn,
+                            ayn,
+                            zoom,
+                        });
+                        if offset_ms >= last_flush_ms.saturating_add(2000) {
+                            last_flush_ms = offset_ms;
+                            let track = ZoomTrack { fps: fps_unified, frames: frames.clone(), settings: Some(settings.clone()) };
+                            if let Ok(json) = serde_json::to_string(&track) {
+                                let tmp = track_path.with_extension("json.tmp");
+                                let _ = fs::write(&tmp, json);
+                                let _ = fs::rename(&tmp, &track_path);
+                            }
+                        }
+                    }
                     last_btn = btn;
                     if !wrote_move {
                         thread::sleep(Duration::from_millis(30));
                     } else {
                         thread::sleep(Duration::from_millis(10));
                     }
+                }
+                // final flush
+                let track = ZoomTrack { fps: fps_unified, frames: frames.clone(), settings: Some(settings.clone()) };
+                if let Ok(json) = serde_json::to_string(&track) {
+                    let tmp = track_path.with_extension("json.tmp");
+                    let _ = fs::write(&tmp, json);
+                    let _ = fs::rename(&tmp, &track_path);
                 }
             }
         });
