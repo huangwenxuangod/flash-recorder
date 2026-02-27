@@ -97,12 +97,13 @@ jobs:
         shell: pwsh
         run: |
           $raw = @'
-${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-'@
+          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          '@
+          $raw = $raw.Trim()
           if ([string]::IsNullOrWhiteSpace($raw)) { throw "Missing TAURI_SIGNING_PRIVATE_KEY secret" }
           $keyPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "tauri-signing.key"
           try {
-            $bytes = [System.Convert]::FromBase64String($raw.Trim())
+            $bytes = [System.Convert]::FromBase64String($raw)
             [System.IO.File]::WriteAllBytes($keyPath, $bytes)
           } catch {
             Set-Content -Path $keyPath -Value $raw -NoNewline
