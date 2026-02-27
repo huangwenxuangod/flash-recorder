@@ -11,8 +11,10 @@ use std::{
 };
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use tauri::{async_runtime, Emitter, Manager, State};
+use tauri::path::BaseDirectory;
 use tokio::net::UdpSocket;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
@@ -30,6 +32,8 @@ use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+static FFMPEG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
 #[cfg(target_os = "windows")]
 fn new_cmd(bin: &str) -> Command {
     let mut cmd = Command::new(bin);
@@ -43,6 +47,21 @@ fn new_cmd(bin: &str) -> Command {
 
 fn ffmpeg_binary() -> String {
     let bin_name = if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" };
+    if let Some(p) = FFMPEG_PATH.get() {
+        if p.exists() {
+            let s = p.to_string_lossy().to_string();
+            #[cfg(target_os = "windows")]
+            {
+                if s.len() >= 120 {
+                    let tmp = env::temp_dir().join("fr_ffmpeg.exe");
+                    let _ = fs::create_dir_all(tmp.parent().unwrap_or(&PathBuf::from(".")));
+                    let _ = fs::copy(p, &tmp);
+                    return tmp.to_string_lossy().to_string();
+                }
+            }
+            return s;
+        }
+    }
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(exe_path) = env::current_exe() {
         if let Some(dir) = exe_path.parent() {
@@ -75,6 +94,29 @@ fn ffmpeg_binary() -> String {
         }
     }
     format!("resources/ffmpeg/{bin_name}")
+}
+
+fn ffmpeg_binary_with_app_handle(app: &tauri::AppHandle) -> String {
+    let bin_name = if cfg!(target_os = "windows") { "ffmpeg.exe" } else { "ffmpeg" };
+    if let Ok(resource_path) =
+        app.path().resolve(format!("ffmpeg/{bin_name}"), BaseDirectory::Resource)
+    {
+        if resource_path.exists() {
+            let _ = FFMPEG_PATH.set(resource_path.clone());
+            let s = resource_path.to_string_lossy().to_string();
+            #[cfg(target_os = "windows")]
+            {
+                if s.len() >= 120 {
+                    let tmp = env::temp_dir().join("fr_ffmpeg.exe");
+                    let _ = fs::create_dir_all(tmp.parent().unwrap_or(&PathBuf::from(".")));
+                    let _ = fs::copy(&resource_path, &tmp);
+                    return tmp.to_string_lossy().to_string();
+                }
+            }
+            return s;
+        }
+    }
+    ffmpeg_binary()
 }
 
 #[derive(Deserialize)]
@@ -1286,7 +1328,7 @@ fn run_export_job(
         "-nostats".to_string(),
         job.request.output_path.clone(),
     ]);
-    let bin = ffmpeg_binary();
+    let bin = ffmpeg_binary_with_app_handle(app);
     let mut child = new_cmd(&bin)
         .args(args)
         .stdout(Stdio::piped())
@@ -2198,12 +2240,12 @@ fn load_edit_state(output_path: String) -> Result<EditState, String> {
 }
 
 #[tauri::command]
-fn ensure_preview(output_path: String) -> Result<String, String> {
+fn ensure_preview(app: tauri::AppHandle, output_path: String) -> Result<String, String> {
     let preview = preview_path(&output_path);
     if preview.exists() {
         return Ok(preview.to_string_lossy().to_string());
     }
-    let bin = ffmpeg_binary();
+    let bin = ffmpeg_binary_with_app_handle(&app);
     let status = new_cmd(&bin)
         .args([
             "-y",
