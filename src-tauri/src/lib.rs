@@ -66,6 +66,7 @@ fn ffmpeg_binary() -> String {
     if let Ok(exe_path) = env::current_exe() {
         if let Some(dir) = exe_path.parent() {
             candidates.push(dir.join("resources").join("ffmpeg").join(&bin_name));
+            candidates.push(dir.join("ffmpeg").join(&bin_name));
         }
         for anc in exe_path.ancestors() {
             if anc.file_name().and_then(|n| n.to_str()) == Some("src-tauri") {
@@ -577,8 +578,8 @@ fn parse_duration_ms(text: &str) -> Option<u64> {
     Some(total.round() as u64)
 }
 
-fn get_media_duration_ms(input_path: &str) -> Option<u64> {
-    let output = new_cmd(&ffmpeg_binary())
+fn get_media_duration_ms(app: &tauri::AppHandle, input_path: &str) -> Option<u64> {
+    let output = new_cmd(&ffmpeg_binary_with_app_handle(app))
         .args(["-i", input_path, "-hide_banner"])
         .output()
         .ok()?;
@@ -1245,7 +1246,7 @@ fn run_export_job(
     state: &Arc<Mutex<ExportManager>>,
     job: &ExportJob,
 ) -> Result<(), String> {
-    let duration_ms = get_media_duration_ms(&job.request.input_path);
+    let duration_ms = get_media_duration_ms(app, &job.request.input_path);
     let camera_path = job
         .request
         .camera_path
@@ -1612,7 +1613,7 @@ fn start_recording(
     let camera_device = request.camera_device.unwrap_or_else(|| "auto".into());
     let mut selected_camera: Option<String> = None;
     if camera_device == "auto" || camera_device == "default" {
-        let devices = list_video_devices_internal().map_err(log_error)?;
+        let devices = list_video_devices_internal(&app).map_err(log_error)?;
         selected_camera = devices.into_iter().next();
     } else if camera_device != "off"
         && camera_device != "none"
@@ -1638,7 +1639,7 @@ fn start_recording(
     let mic_device = request.mic_device.unwrap_or_else(|| "auto".into());
     let mut selected_device: Option<String> = None;
     if mic_device == "auto" || mic_device == "default" {
-        let devices = list_audio_devices_internal().map_err(log_error)?;
+        let devices = list_audio_devices_internal(&app).map_err(log_error)?;
         selected_device = devices.into_iter().next();
     } else if mic_device != "mute" && !mic_device.trim().is_empty() {
         selected_device = Some(mic_device.clone());
@@ -1794,8 +1795,7 @@ fn start_recording(
 
     let log_file = fs::File::create(&log_path).map_err(|e| log_error(e.to_string()))?;
 
-    let bin = ffmpeg_binary()
-        ;
+    let bin = ffmpeg_binary_with_app_handle(&app);
     let child = new_cmd(&bin)
         .args(args)
         .stdin(Stdio::piped())
@@ -2041,12 +2041,12 @@ fn stop_recording(
 }
 
 #[tauri::command]
-fn list_audio_devices() -> Result<Vec<String>, String> {
-    list_audio_devices_internal()
+fn list_audio_devices(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    list_audio_devices_internal(&app)
 }
 
-fn list_audio_devices_internal() -> Result<Vec<String>, String> {
-    let bin = ffmpeg_binary();
+fn list_audio_devices_internal(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
+    let bin = ffmpeg_binary_with_app_handle(app);
     let (stderr_output, stdout_output) = new_cmd(&bin)
         .args(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
         .stdin(Stdio::null())
@@ -2074,8 +2074,8 @@ fn list_audio_devices_internal() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn list_video_devices() -> Result<Vec<String>, String> {
-    list_video_devices_internal()
+fn list_video_devices(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    list_video_devices_internal(&app)
 }
 
 #[tauri::command]
@@ -2131,8 +2131,8 @@ fn list_windows() -> Result<Vec<String>, String> {
     }
 }
 
-fn list_video_devices_internal() -> Result<Vec<String>, String> {
-    let bin = ffmpeg_binary();
+fn list_video_devices_internal(app: &tauri::AppHandle) -> Result<Vec<String>, String> {
+    let bin = ffmpeg_binary_with_app_handle(app);
     let (stderr_output, stdout_output) = new_cmd(&bin)
         .args(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
         .stdin(Stdio::null())
@@ -2297,7 +2297,7 @@ fn cursor_path_for_dir(dir: &PathBuf) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-fn ensure_zoom_track(input_path: String) -> Result<String, String> {
+fn ensure_zoom_track(app: tauri::AppHandle, input_path: String) -> Result<String, String> {
     let dir = PathBuf::from(&input_path)
         .parent()
         .ok_or("invalid_input_path")?
@@ -2315,7 +2315,7 @@ fn ensure_zoom_track(input_path: String) -> Result<String, String> {
     let rect_w = capture_meta.rect.width.max(1) as f64;
     let rect_h = capture_meta.rect.height.max(1) as f64;
     let fps = 30u32;
-    let duration_ms = get_media_duration_ms(&input_path).unwrap_or(15000);
+    let duration_ms = get_media_duration_ms(&app, &input_path).unwrap_or(15000);
     let mut events: Vec<CursorEventRecord> = Vec::new();
     let data = fs::read_to_string(&cursor_path).map_err(|_| "cursor_read_failed")?;
     for line in data.lines() {
@@ -2469,7 +2469,7 @@ fn ensure_zoom_track(input_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn ensure_clip_track(input_path: String) -> Result<String, String> {
+fn ensure_clip_track(app: tauri::AppHandle, input_path: String) -> Result<String, String> {
     let dir = PathBuf::from(&input_path)
         .parent()
         .ok_or("invalid_input_path")?
@@ -2478,7 +2478,7 @@ fn ensure_clip_track(input_path: String) -> Result<String, String> {
     if path.exists() {
         return Ok(path.to_string_lossy().to_string());
     }
-    let duration_ms = get_media_duration_ms(&input_path).unwrap_or(0);
+    let duration_ms = get_media_duration_ms(&app, &input_path).unwrap_or(0);
     let mut segments: Vec<ClipSegment> = Vec::new();
     if duration_ms > 0 {
         segments.push(ClipSegment { start_s: 0.0, end_s: (duration_ms as f64) / 1000.0, speed: None });
@@ -2511,7 +2511,7 @@ fn save_clip_track(input_path: String, track_json: String) -> Result<String, Str
 }
 
 #[tauri::command]
-fn ensure_camera_track(input_path: String) -> Result<String, String> {
+fn ensure_camera_track(app: tauri::AppHandle, input_path: String) -> Result<String, String> {
     let dir = PathBuf::from(&input_path)
         .parent()
         .ok_or("invalid_input_path")?
@@ -2520,7 +2520,7 @@ fn ensure_camera_track(input_path: String) -> Result<String, String> {
     if path.exists() {
         return Ok(path.to_string_lossy().to_string());
     }
-    let duration_ms = get_media_duration_ms(&input_path).unwrap_or(0);
+    let duration_ms = get_media_duration_ms(&app, &input_path).unwrap_or(0);
     let segments: Vec<CameraSegment> = if duration_ms > 0 {
         vec![CameraSegment {
             start_s: 0.0,
