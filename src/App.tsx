@@ -4,6 +4,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check } from "@tauri-apps/plugin-updater";
 import { FiCamera, FiFolder, FiMic, FiMonitor, FiPlay, FiSettings, FiVideo } from "react-icons/fi";
 import { Button } from "@heroui/react";
 import "./App.css";
@@ -24,6 +26,8 @@ type AppSettings = {
   resolution: number;
   autostart: boolean;
 };
+
+type UpdateInfo = Awaited<ReturnType<typeof check>>;
 
 type RegionSelectionPayload = {
   id: number;
@@ -188,6 +192,11 @@ function MainApp() {
   const [view, setView] = useState<"main" | "settings">("main");
   const [autostartLoading, setAutostartLoading] = useState(true);
   const [defaultExportDir, setDefaultExportDir] = useState("");
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "latest" | "updating" | "error">("idle");
+  const [updateMessage, setUpdateMessage] = useState("");
+  const [updateVersion, setUpdateVersion] = useState("");
+  const updateRef = useRef<UpdateInfo>(null);
+  const updateBusy = updateStatus === "checking" || updateStatus === "updating";
 
   const fpsOptions = [24, 30, 60];
   const resolutionOptions = [720, 1080, 1440, 2160];
@@ -256,6 +265,51 @@ function MainApp() {
     return () => {
       mounted = false;
     };
+  }, []);
+
+  const checkForUpdates = async (silent: boolean) => {
+    if (updateStatus === "checking" || updateStatus === "updating") {
+      return;
+    }
+    setUpdateStatus("checking");
+    setUpdateMessage("");
+    try {
+      const update = await check();
+      updateRef.current = update;
+      if (update) {
+        setUpdateStatus("available");
+        setUpdateVersion(update.version);
+        setUpdateMessage(update.body ?? "");
+      } else {
+        setUpdateStatus("latest");
+        if (!silent) {
+          setUpdateMessage("已是最新版本");
+        }
+      }
+    } catch (error) {
+      setUpdateStatus("error");
+      setUpdateMessage(String(error));
+    }
+  };
+
+  const installUpdate = async () => {
+    const update = updateRef.current;
+    if (!update || updateStatus === "updating") {
+      return;
+    }
+    setUpdateStatus("updating");
+    setUpdateMessage("");
+    try {
+      await update.downloadAndInstall();
+      await relaunch();
+    } catch (error) {
+      setUpdateStatus("error");
+      setUpdateMessage(String(error));
+    }
+  };
+
+  useEffect(() => {
+    checkForUpdates(true).catch(() => null);
   }, []);
 
   const updateSetting = (next: Partial<AppSettings>) => {
@@ -649,6 +703,49 @@ function MainApp() {
                       <span className={`absolute top-1 h-5 w-5 rounded-full bg-white transition ${settings.autostart ? "left-6" : "left-1"}`} />
                     </Button>
                   </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-800/80 bg-slate-950/70 p-4">
+                  <div className="text-xs uppercase tracking-[0.2em] text-slate-400">更新</div>
+                  <div className="mt-3 flex items-center justify-between">
+                    <div>
+                      <div className="text-sm text-slate-100">应用更新</div>
+                      <div className="text-xs text-slate-500">
+                        {updateStatus === "checking" && "正在检查更新"}
+                        {updateStatus === "available" && `发现新版本 ${updateVersion}`}
+                        {updateStatus === "latest" && "已是最新版本"}
+                        {updateStatus === "updating" && "正在更新"}
+                        {updateStatus === "error" && "检查更新失败"}
+                        {updateStatus === "idle" && "检查并安装新版本"}
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      onClick={() => checkForUpdates(false)}
+                      className="rounded-full border border-white/10 bg-slate-900/70 px-4 py-2 text-xs text-slate-300 transition hover:border-white/20 cursor-pointer"
+                      disabled={updateBusy}
+                    >
+                      {updateStatus === "checking" ? "检查中" : "检查更新"}
+                    </Button>
+                  </div>
+                  {updateStatus === "available" ? (
+                    <div className="mt-3 flex items-center justify-between">
+                      <div className="text-xs text-slate-400">
+                        {updateMessage ? updateMessage.slice(0, 120) : "检测到新版本"}
+                      </div>
+                      <Button
+                        type="button"
+                        onClick={installUpdate}
+                        className="rounded-full border border-cyan-400/40 bg-cyan-400/20 px-4 py-2 text-xs text-cyan-100 transition hover:border-cyan-300/60 cursor-pointer"
+                        disabled={updateBusy}
+                      >
+                        立即更新
+                      </Button>
+                    </div>
+                  ) : null}
+                  {updateStatus === "error" && updateMessage ? (
+                    <div className="mt-3 text-xs text-red-300">{updateMessage}</div>
+                  ) : null}
                 </div>
 
                 <div className="flex justify-end">

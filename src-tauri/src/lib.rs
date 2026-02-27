@@ -2697,6 +2697,8 @@ pub fn run() {
             None,
         ))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(RecordingState::new())
         .manage(PreviewState::new())
         .manage(ExportState::new())
