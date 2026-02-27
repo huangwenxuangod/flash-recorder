@@ -93,10 +93,25 @@ jobs:
           Get-ChildItem -Recurse -File 'src-tauri\ffmpeg' -Include *.exe | ForEach-Object {
             & $tool.FullName sign /f "$env:PFX_FILE" /p "$env:PFX_PASSWORD" /fd sha256 /tr "http://timestamp.digicert.com" /td sha256 "$($_.FullName)"
           }
+      - name: Prepare updater signing key
+        shell: pwsh
+        run: |
+          $raw = @'
+${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+'@
+          if ([string]::IsNullOrWhiteSpace($raw)) { throw "Missing TAURI_SIGNING_PRIVATE_KEY secret" }
+          $keyPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath "tauri-signing.key"
+          try {
+            $bytes = [System.Convert]::FromBase64String($raw.Trim())
+            [System.IO.File]::WriteAllBytes($keyPath, $bytes)
+          } catch {
+            Set-Content -Path $keyPath -Value $raw -NoNewline
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value ("TAURI_SIGNING_PRIVATE_KEY=" + $keyPath)
       - name: Build Tauri (Windows)
         run: pnpm run tauri build
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
 
