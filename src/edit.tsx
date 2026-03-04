@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, type Event, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
 import { FiCamera, FiUser, FiImage, FiPause, FiPlay, FiSliders, FiFolder } from "react-icons/fi";
 import { Toaster, toast } from "react-hot-toast";
@@ -13,26 +13,8 @@ import { Button } from "@heroui/react";
 import TimelineUI from "./components/TimelineUI";
 
 const SETTINGS_EXPORT_DIR = "settingsExportDir";
-
-type ZoomFrame = {
-  time_ms: number;
-  axn: number;
-  ayn: number;
-  zoom: number;
-};
-type ZoomTrack = {
-  fps: number;
-  frames: ZoomFrame[];
-  settings?: {
-    max_zoom?: number;
-  };
-};
-type CursorEvent = {
-  kind: string;
-  offset_ms: number;
-  axn: number;
-  ayn: number;
-};
+const SETTINGS_FPS = "settingsFps";
+const SETTINGS_RESOLUTION = "settingsResolution";
 
 type Block = { id: string; start: number; end: number };
 type EditState = {
@@ -86,6 +68,7 @@ const EditPage = () => {
   const [editPadding, setEditPadding] = useState(0);
   const [editRadius, setEditRadius] = useState(12);
   const [editShadow, setEditShadow] = useState(20);
+  const [safeRect, setSafeRect] = useState({ x: 0, y: 0, w: 1, h: 1 });
   const [editAspect, setEditAspect] = useState<"16:9" | "1:1" | "9:16">("16:9");
   const [cameraSize, setCameraSize] = useState(168);
   const [cameraShape, setCameraShape] = useState<"circle" | "rounded" | "square">("circle");
@@ -111,6 +94,7 @@ const EditPage = () => {
   const [previewPlaying, setPreviewPlaying] = useState(false);
   const isScrubbingRef = useRef(false);
   const prevPlayingRef = useRef(false);
+  const autoPlayRef = useRef(true);
   const previewAreaRef = useRef<HTMLDivElement | null>(null);
   const [previewBaseHeight, setPreviewBaseHeight] = useState(236);
   const previewContentRef = useRef<HTMLDivElement | null>(null);
@@ -124,34 +108,24 @@ const EditPage = () => {
   const [isMobile, setIsMobile] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [cameraPosition, setCameraPosition] = useState<CameraPosition>("bottom_left");
-  const [zoomTrack, setZoomTrack] = useState<ZoomTrack | null>(null);
-  const realtimeFrameRef = useRef<ZoomFrame | null>(null);
-  const smoothAxnRef = useRef<number | null>(null);
-  const smoothAynRef = useRef<number | null>(null);
-  const smoothZoomRef = useRef<number | null>(null);
-  const [zoomProgress, setZoomProgress] = useState(0);
-  const zoomProgressRef = useRef(0);
-  const [cursorEvents, setCursorEvents] = useState<CursorEvent[]>([]);
   const [clipBlocks, setClipBlocks] = useState<Block[]>([]);
-  const [zoomBlocks, setZoomBlocks] = useState<Block[]>([]);
   const [avatarBlocks, setAvatarBlocks] = useState<Block[]>([]);
-  const historyRef = useRef<{ clip: Block[]; zoom: Block[]; avatar: Block[] }[]>([]);
+  const historyRef = useRef<{ clip: Block[]; avatar: Block[] }[]>([]);
   const histIndexRef = useRef<number>(-1);
-  const pushHistory = (clip: Block[], zoom: Block[], avatar: Block[]) => {
+  const pushHistory = (clip: Block[], avatar: Block[]) => {
     const last = historyRef.current[histIndexRef.current] || null;
     const same =
       last &&
       JSON.stringify(last.clip) === JSON.stringify(clip) &&
-      JSON.stringify(last.zoom) === JSON.stringify(zoom) &&
       JSON.stringify(last.avatar) === JSON.stringify(avatar);
     if (same) return;
     historyRef.current = historyRef.current.slice(0, histIndexRef.current + 1);
-    historyRef.current.push({ clip: clip.map((b) => ({ ...b })), zoom: zoom.map((b) => ({ ...b })), avatar: avatar.map((b) => ({ ...b })) });
+    historyRef.current.push({ clip: clip.map((b) => ({ ...b })), avatar: avatar.map((b) => ({ ...b })) });
     histIndexRef.current = historyRef.current.length - 1;
   };
   useEffect(() => {
-    pushHistory(clipBlocks, zoomBlocks, avatarBlocks);
-  }, [clipBlocks, zoomBlocks, avatarBlocks]);
+    pushHistory(clipBlocks, avatarBlocks);
+  }, [clipBlocks, avatarBlocks]);
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       const z = e.ctrlKey && !e.shiftKey && (e.key.toLowerCase() === "z");
@@ -161,10 +135,8 @@ const EditPage = () => {
           histIndexRef.current -= 1;
           const entry = historyRef.current[histIndexRef.current];
           setClipBlocks(entry.clip.map((b) => ({ ...b })));
-          setZoomBlocks(entry.zoom.map((b) => ({ ...b })));
           setAvatarBlocks(entry.avatar.map((b) => ({ ...b })));
           persistClipBlocks(entry.clip);
-          persistZoomBlocks(entry.zoom);
           persistAvatarBlocks(entry.avatar);
         }
       } else if (y) {
@@ -172,10 +144,8 @@ const EditPage = () => {
           histIndexRef.current += 1;
           const entry = historyRef.current[histIndexRef.current];
           setClipBlocks(entry.clip.map((b) => ({ ...b })));
-          setZoomBlocks(entry.zoom.map((b) => ({ ...b })));
           setAvatarBlocks(entry.avatar.map((b) => ({ ...b })));
           persistClipBlocks(entry.clip);
-          persistZoomBlocks(entry.zoom);
           persistAvatarBlocks(entry.avatar);
         }
       }
@@ -208,55 +178,6 @@ const EditPage = () => {
   }, [outputPath]);
 
   useEffect(() => {
-    if (!previewSrc || !outputPath) return;
-    invoke<string>("ensure_zoom_track", { inputPath: outputPath })
-      .then(async (trackPath) => {
-        const url = convertFileSrc(trackPath);
-        const res = await fetch(url);
-        const data = await res.json();
-        setZoomTrack(data as ZoomTrack);
-      })
-      .catch(() => null);
-  }, [previewSrc, outputPath]);
-  useEffect(() => {
-    if (!previewSrc || !outputPath) {
-      setCursorEvents([]);
-      return;
-    }
-    invoke<string>("ensure_cursor_track", { inputPath: outputPath })
-      .then(async (cursorPath) => {
-        const url = convertFileSrc(cursorPath);
-        const res = await fetch(url);
-        const text = await res.text();
-        const events: CursorEvent[] = [];
-        for (const line of text.split("\n")) {
-          if (!line.trim()) continue;
-          try {
-            const rec = JSON.parse(line) as CursorEvent;
-            if (typeof rec.axn === "number" && typeof rec.ayn === "number") {
-              events.push(rec);
-            }
-          } catch {
-            continue;
-          }
-        }
-        events.sort((a, b) => a.offset_ms - b.offset_ms);
-        setCursorEvents(events);
-      })
-      .catch(() => setCursorEvents([]));
-  }, [previewSrc, outputPath]);
-
-  useEffect(() => {
-    const unlistenPromise = listen<ZoomFrame>("zoom_frame", (ev) => {
-      const f = ev.payload;
-      realtimeFrameRef.current = f;
-    });
-    return () => {
-      unlistenPromise.then((u) => u()).catch(() => null);
-    };
-  }, []);
-
-  useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
       if (event.key === "recordingOutputPath") {
         setOutputPath(event.newValue ?? "");
@@ -270,21 +191,6 @@ const EditPage = () => {
   }, []);
 
   useEffect(() => {
-    if (!outputPath) {
-      setZoomTrack(null);
-      return;
-    }
-    invoke<string>("ensure_zoom_track", { inputPath: outputPath })
-      .then(async (trackPath) => {
-        const url = convertFileSrc(trackPath);
-        const res = await fetch(url);
-        const data = await res.json();
-        setZoomTrack(data as ZoomTrack);
-      })
-      .catch(() => setZoomTrack(null));
-  }, [outputPath]);
-
-  useEffect(() => {
     if (!outputPath) return;
     invoke<string>("ensure_clip_track", { inputPath: outputPath })
       .then(async (path) => {
@@ -292,13 +198,16 @@ const EditPage = () => {
         const res = await fetch(url);
         const data = await res.json();
         const segs = (data?.segments || []) as { start_s: number; end_s: number }[];
-        if (segs.length === 0) {
-          setClipBlocks([]);
-        } else {
-          const start = Math.min(...segs.map((s) => s.start_s));
-          const end = Math.max(...segs.map((s) => s.end_s));
-          setClipBlocks([{ id: "clip-1", start, end }]);
-        }
+        const blocks = segs
+          .filter((s) => Number.isFinite(s.start_s) && Number.isFinite(s.end_s))
+          .map((s, index) => ({
+            id: `clip-${index}-${Math.round(s.start_s * 1000)}`,
+            start: Math.max(0, s.start_s),
+            end: Math.max(0, s.end_s),
+          }))
+          .filter((s) => s.end > s.start)
+          .sort((a, b) => a.start - b.start);
+        setClipBlocks(blocks);
       })
       .catch(() => setClipBlocks([]));
     invoke<string>("ensure_camera_track", { inputPath: outputPath })
@@ -307,125 +216,46 @@ const EditPage = () => {
         const res = await fetch(url);
         const data = await res.json();
         const segs = (data?.segments || []) as { start_s: number; end_s: number; visible?: boolean }[];
-        const vis = segs.filter((s) => s.visible !== false);
-        if (vis.length === 0) {
-          setAvatarBlocks([]);
-        } else {
-          const start = Math.min(...vis.map((s) => s.start_s));
-          const end = Math.max(...vis.map((s) => s.end_s));
-          setAvatarBlocks([{ id: "avatar-1", start, end }]);
-        }
+        const blocks = segs
+          .filter((s) => s.visible !== false)
+          .filter((s) => Number.isFinite(s.start_s) && Number.isFinite(s.end_s))
+          .map((s, index) => ({
+            id: `avatar-${index}-${Math.round(s.start_s * 1000)}`,
+            start: Math.max(0, s.start_s),
+            end: Math.max(0, s.end_s),
+          }))
+          .filter((s) => s.end > s.start)
+          .sort((a, b) => a.start - b.start);
+        setAvatarBlocks(blocks);
       })
       .catch(() => setAvatarBlocks([]));
   }, [outputPath]);
 
-  useEffect(() => {
-    if (!zoomTrack || !previewDuration) {
-      setZoomBlocks([]);
-      return;
-    }
-    const frames = zoomTrack.frames || [];
-    const windows: { start: number; end: number }[] = [];
-    let i = 0;
-    const n = frames.length;
-    while (i < n) {
-      while (i < n && frames[i].zoom <= 1.0001) i++;
-      if (i >= n) break;
-      const s = (frames[i].time_ms || 0) / 1000;
-      let j = i;
-      while (j < n && frames[j].zoom > 1.0001) j++;
-      const e = (frames[Math.max(0, j - 1)].time_ms || 0) / 1000;
-      windows.push({ start: s, end: e });
-      i = j;
-      if (windows.length > 100) break;
-    }
-    const z = windows.length
-      ? windows.map((w, i2) => ({ id: `zoom-${i2 + 1}`, start: w.start, end: Math.min(previewDuration, w.end) }))
-      : [];
-    setZoomBlocks(z);
-  }, [zoomTrack, previewDuration]);
-
   const persistClipBlocks = async (blocks: { id: string; start: number; end: number }[]) => {
     if (!outputPath) return;
-    const seg = blocks[0];
-    const payload = seg
-      ? { segments: [{ start_s: seg.start, end_s: seg.end }] }
-      : { segments: [] as { start_s: number; end_s: number }[] };
+    const segments = blocks
+      .map((b) => ({
+        start_s: Math.max(0, b.start),
+        end_s: Math.max(0, b.end),
+      }))
+      .filter((s) => s.end_s > s.start_s)
+      .sort((a, b) => a.start_s - b.start_s);
+    const payload = { segments };
     await invoke<string>("save_clip_track", { inputPath: outputPath, trackJson: JSON.stringify(payload) }).catch(() => null);
   };
   const persistAvatarBlocks = async (blocks: { id: string; start: number; end: number }[]) => {
     if (!outputPath) return;
-    const seg = blocks[0];
-    const payload = seg
-      ? { segments: [{ start_s: seg.start, end_s: seg.end, visible: true }] }
-      : { segments: [] as { start_s: number; end_s: number; visible: boolean }[] };
+    const segments = blocks
+      .map((b) => ({
+        start_s: Math.max(0, b.start),
+        end_s: Math.max(0, b.end),
+        visible: true,
+      }))
+      .filter((s) => s.end_s > s.start_s)
+      .sort((a, b) => a.start_s - b.start_s);
+    const payload = { segments };
     await invoke<string>("save_camera_track", { inputPath: outputPath, trackJson: JSON.stringify(payload) }).catch(() => null);
   };
-  const persistZoomBlocks = async (blocks: { id: string; start: number; end: number }[]) => {
-    if (!outputPath) return;
-    const fps = 30;
-    const videoDuration =
-      previewVideoRef.current && Number.isFinite(previewVideoRef.current.duration)
-        ? previewVideoRef.current.duration
-        : 0;
-    const maxEnd = blocks.reduce((acc, b) => Math.max(acc, b.end), 0);
-    const duration = Math.max(previewDuration || 0, videoDuration, maxEnd);
-    const totalFrames = Math.max(1, Math.round(duration * fps));
-    const frames: ZoomFrame[] = [];
-    const rampIn = 0.4;
-    const rampOut = editAspect === "9:16" ? 0 : 0.4;
-    const zoomMax = editAspect === "9:16" ? 2.0 : 2.0;
-    const ease = (u: number) => 1 + (zoomMax - 1) * (1 - Math.pow(1 - Math.max(0, Math.min(1, u)), 3));
-    let cursorIndex = 0;
-    let currentAxn = 0.5;
-    let currentAyn = 0.5;
-    for (let i = 0; i < totalFrames; i++) {
-      const t = i / fps;
-      let inWindow = false;
-      let z = 1;
-      const tMs = Math.round(t * 1000);
-      while (cursorIndex < cursorEvents.length && cursorEvents[cursorIndex].offset_ms <= tMs) {
-        currentAxn = cursorEvents[cursorIndex].axn;
-        currentAyn = cursorEvents[cursorIndex].ayn;
-        cursorIndex += 1;
-      }
-      for (const b of blocks) {
-        if (t >= b.start && t <= b.end) {
-          inWindow = true;
-          if (t < b.start + rampIn) {
-            const u = (t - b.start) / Math.max(1e-6, rampIn);
-            z = ease(u);
-          } else if (t > b.end - rampOut) {
-            const u = (b.end - t) / Math.max(1e-6, rampOut);
-            z = ease(u);
-          } else {
-            z = zoomMax;
-          }
-          break;
-        }
-      }
-      frames.push({
-        time_ms: tMs,
-        axn: currentAxn,
-        ayn: currentAyn,
-        zoom: inWindow ? z : 1.0,
-      });
-    }
-    const payload = {
-      fps,
-      frames,
-      settings: {
-        max_zoom: zoomMax,
-        ramp_in_s: rampIn,
-        ramp_out_s: rampOut,
-        sample_ms: 120,
-        follow_threshold_px: 160,
-      },
-    };
-    await invoke<string>("save_zoom_track", { inputPath: outputPath, trackJson: JSON.stringify(payload) }).catch(() => null);
-    setZoomTrack(payload as ZoomTrack);
-  };
-  
   useEffect(() => {
     if (!outputPath) {
       return;
@@ -461,6 +291,17 @@ const EditPage = () => {
         setBackgroundType(backgroundValue);
         setBackgroundPreset(state.background_preset);
         setCameraPosition(cameraPosValue);
+        const nextSafe = {
+          x: typeof state.safe_x === "number" ? state.safe_x : 0,
+          y: typeof state.safe_y === "number" ? state.safe_y : 0,
+          w: typeof state.safe_w === "number" ? state.safe_w : 1,
+          h: typeof state.safe_h === "number" ? state.safe_h : 1,
+        };
+        const w = Math.min(1, Math.max(0.2, nextSafe.w));
+        const h = Math.min(1, Math.max(0.2, nextSafe.h));
+        const x = Math.min(1 - w, Math.max(0, nextSafe.x));
+        const y = Math.min(1 - h, Math.max(0, nextSafe.y));
+        setSafeRect({ x, y, w, h });
         hasLoadedRef.current = true;
       })
       .catch(() => {
@@ -485,12 +326,20 @@ const EditPage = () => {
       setPreviewPlaying(false);
       setPreviewTime(0);
     };
+    const handleLoadedData = () => {
+      drawCanvas();
+      if (autoPlayRef.current) {
+        autoPlayRef.current = false;
+        video.play().catch(() => null);
+      }
+    };
     const handleDuration = () => {
       setPreviewDuration(Number.isFinite(video.duration) ? video.duration : 0);
     };
     const handleTime = () => {
       if (!isScrubbingRef.current) {
-        setPreviewTime(video.currentTime || 0);
+        const t = ensureClipPlayback(video);
+        setPreviewTime(t);
       }
     };
     const handlePlay = () => setPreviewPlaying(true);
@@ -506,11 +355,12 @@ const EditPage = () => {
       }
     };
     const handleSeeked = () => {
-      syncAvatarToPreview(video.currentTime || 0);
-      smoothAxnRef.current = null;
-      smoothAynRef.current = null;
+      const t = ensureClipPlayback(video);
+      syncAvatarToPreview(t);
+      setPreviewTime(t);
     };
     video.addEventListener("loadedmetadata", handleLoaded);
+    video.addEventListener("loadeddata", handleLoadedData);
     video.addEventListener("durationchange", handleDuration);
     video.addEventListener("timeupdate", handleTime);
     video.addEventListener("play", handlePlay);
@@ -520,6 +370,7 @@ const EditPage = () => {
     handleLoaded();
     return () => {
       video.removeEventListener("loadedmetadata", handleLoaded);
+      video.removeEventListener("loadeddata", handleLoadedData);
       video.removeEventListener("durationchange", handleDuration);
       video.removeEventListener("timeupdate", handleTime);
       video.removeEventListener("play", handlePlay);
@@ -527,6 +378,9 @@ const EditPage = () => {
       video.removeEventListener("ended", handleEnded);
       video.removeEventListener("seeked", handleSeeked);
     };
+  }, [previewSrc]);
+  useEffect(() => {
+    autoPlayRef.current = true;
   }, [previewSrc]);
 
   useEffect(() => {
@@ -537,7 +391,9 @@ const EditPage = () => {
     const runRaf = () => {
       if (stop) return;
       if (!isScrubbingRef.current) {
-        setPreviewTime(video.currentTime || 0);
+        const t = ensureClipPlayback(video);
+        setPreviewTime(t);
+        syncAvatarToPreview(t);
       }
       drawCanvas();
       rafId = requestAnimationFrame(runRaf);
@@ -548,7 +404,9 @@ const EditPage = () => {
         const tick = () => {
           if (stop) return;
           if (!isScrubbingRef.current) {
-            setPreviewTime(video.currentTime || 0);
+            const t = ensureClipPlayback(video);
+            setPreviewTime(t);
+            syncAvatarToPreview(t);
           }
           drawCanvas();
           (video as any).requestVideoFrameCallback(tick);
@@ -622,7 +480,9 @@ const EditPage = () => {
   ]);
 
   useEffect(() => {
-    const unlistenPromise = listen<ExportStatus>("export_progress", (event) => {
+    const unlistenPromise: Promise<UnlistenFn> = listen<ExportStatus>(
+      "export_progress",
+      (event: Event<ExportStatus>) => {
       const status = event.payload;
       if (activeJobIdRef.current && status.job_id !== activeJobIdRef.current) {
         return;
@@ -660,7 +520,8 @@ const EditPage = () => {
       if (["completed", "failed", "cancelled"].includes(status.state)) {
         activeJobIdRef.current = null;
       }
-    });
+      }
+    );
     return () => {
       unlistenPromise.then((unlisten) => unlisten()).catch(() => null);
     };
@@ -755,6 +616,17 @@ const EditPage = () => {
     backgroundType === "gradient"
       ? backgroundPresets.gradients[backgroundPreset % backgroundPresets.gradients.length]
       : backgroundPresets.wallpapers[backgroundPreset % backgroundPresets.wallpapers.length];
+  const normalizeBlocks = (blocks: Block[]) =>
+    blocks
+      .map((b) => ({
+        ...b,
+        start: Math.max(0, b.start),
+        end: Math.max(0, b.end),
+      }))
+      .filter((b) => b.end > b.start)
+      .sort((a, b) => a.start - b.start);
+  const clipSegments = useMemo(() => normalizeBlocks(clipBlocks), [clipBlocks]);
+  const avatarSegments = useMemo(() => normalizeBlocks(avatarBlocks), [avatarBlocks]);
   const backgroundStops = useMemo(
     () => ({
       gradients: [
@@ -785,14 +657,6 @@ const EditPage = () => {
   const evenize = (n: number) => (n % 2 === 0 ? n : n - 1);
   const previewFrameHeight = evenize(previewBaseHeight);
   const previewFrameWidth = evenize(Math.round(previewFrameHeight * previewAspect));
-  const MARGIN_LR_169 = 0.06;
-  const MARGIN_TB_916 = 0.36;
-  const ZOOM_MARGIN_TOP_916 = 0.1;
-  const ZOOM_MARGIN_BOTTOM_916 = 0.2;
-  const MARGIN_TB_11 = 0.24;
-  const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
-  const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-  const easeInOutCubic = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
   const drawCanvasBackground = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
     if (backgroundType === "wallpaper") {
       const stops = backgroundStops.wallpapers[backgroundPreset % backgroundStops.wallpapers.length];
@@ -811,23 +675,60 @@ const EditPage = () => {
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, w, h);
   };
-  const safeRectForAspect = () => {
-    let marginLR = 0;
-    let marginTB = 0;
-    if (editAspect === "16:9") {
-      marginLR = MARGIN_LR_169;
-    } else if (editAspect === "1:1") {
-      marginTB = MARGIN_TB_11;
-    } else {
-      marginTB = MARGIN_TB_916;
-    }
-    const w = Math.max(0, 1 - marginLR * 2);
-    const h = Math.max(0, 1 - marginTB * 2);
-    return { x: marginLR, y: marginTB, w, h };
+  const updateSafeRect = (next: Partial<{ x: number; y: number; w: number; h: number }>) => {
+    setSafeRect((prev) => {
+      const draft = { ...prev, ...next };
+      const w = Math.min(1, Math.max(0.2, draft.w));
+      const h = Math.min(1, Math.max(0.2, draft.h));
+      const x = Math.min(1 - w, Math.max(0, draft.x));
+      const y = Math.min(1 - h, Math.max(0, draft.y));
+      return { x, y, w, h };
+    });
   };
-  const avatarZoomTarget = editAspect === "9:16" ? 0.62 : 0.7;
-  const zoomAvatarScale = lerp(1, avatarZoomTarget, zoomProgress);
-  const effectiveAvatarScale = Math.min(avatarScale, zoomAvatarScale);
+  const safeRectForAspect = () => ({
+    x: Math.min(1 - safeRect.w, Math.max(0, safeRect.x)),
+    y: Math.min(1 - safeRect.h, Math.max(0, safeRect.y)),
+    w: Math.min(1, Math.max(0.2, safeRect.w)),
+    h: Math.min(1, Math.max(0.2, safeRect.h)),
+  });
+  const isTimeInSegments = (segments: Block[], t: number) =>
+    segments.some((s) => t >= s.start && t <= s.end);
+  const clampTimeToSegments = (segments: Block[], t: number) => {
+    if (segments.length === 0) return t;
+    for (const seg of segments) {
+      if (t >= seg.start && t <= seg.end) {
+        return t;
+      }
+    }
+    const next = segments.find((seg) => t < seg.start);
+    if (next) {
+      return next.start;
+    }
+    return segments[segments.length - 1].end;
+  };
+  const ensureClipPlayback = (video: HTMLVideoElement) => {
+    if (clipSegments.length === 0) {
+      return video.currentTime || 0;
+    }
+    const t = video.currentTime || 0;
+    for (const seg of clipSegments) {
+      if (t >= seg.start && t <= seg.end) {
+        return t;
+      }
+      if (t < seg.start) {
+        video.currentTime = seg.start;
+        return seg.start;
+      }
+    }
+    const last = clipSegments[clipSegments.length - 1];
+    video.currentTime = last.end;
+    if (!video.paused) {
+      video.pause();
+      setPreviewPlaying(false);
+    }
+    return last.end;
+  };
+  const effectiveAvatarScale = avatarScale;
   const exportDisabled =
     !outputPath || exportStatus?.state === "running" || exportStatus?.state === "queued";
   const cameraRadius =
@@ -848,6 +749,10 @@ const EditPage = () => {
     exportStatus?.state === "running" || exportStatus?.state === "queued";
 
   const [exportDir, setExportDir] = useState("");
+  const [exportFps, setExportFps] = useState(() => Number(localStorage.getItem(SETTINGS_FPS) ?? 60));
+  const [exportResolution, setExportResolution] = useState(() =>
+    Number(localStorage.getItem(SETTINGS_RESOLUTION) ?? 1080)
+  );
   useEffect(() => {
     const saved = localStorage.getItem(SETTINGS_EXPORT_DIR) || "";
     if (saved) {
@@ -857,6 +762,21 @@ const EditPage = () => {
         .then((dir) => setExportDir(dir))
         .catch(() => null);
     }
+  }, []);
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === SETTINGS_EXPORT_DIR) {
+        setExportDir(event.newValue ?? "");
+      }
+      if (event.key === SETTINGS_FPS) {
+        setExportFps(Number(event.newValue ?? 60));
+      }
+      if (event.key === SETTINGS_RESOLUTION) {
+        setExportResolution(Number(event.newValue ?? 1080));
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
   }, []);
   const joinPath = (dir: string, name: string) => {
     if (!dir) return name;
@@ -869,10 +789,20 @@ const EditPage = () => {
     const name = `Flash Recorder_${sessionIdFromInput(input)}.mp4`;
     return joinPath(exportDir, name);
   };
+  const bitrateForResolution = (value: number) => {
+    if (value >= 2160) return 45000;
+    if (value >= 1440) return 20000;
+    if (value >= 1080) return 12000;
+    return 6000;
+  };
   const openExportFolder = async () => {
     try {
-      const dir = await invoke<string>("get_export_dir");
-      await invoke("open_path", { path: dir });
+      let target = exportDir;
+      if (!target) {
+        target = await invoke<string>("get_export_dir");
+        setExportDir(target);
+      }
+      await invoke("open_path", { path: target });
     } catch (error) {
       toast.error(String(error).split("\n")[0].slice(0, 140));
     }
@@ -880,12 +810,15 @@ const EditPage = () => {
 
   const profileForAspect = () => {
     if (editAspect === "1:1") {
-      return { width: 1080, height: 1080 };
+      const base = evenize(exportResolution || 1080);
+      return { width: base, height: base };
     }
     if (editAspect === "9:16") {
-      return { width: 1080, height: 1920 };
+      const base = evenize(exportResolution || 1080);
+      return { width: base, height: evenize((base * 16) / 9) };
     }
-    return { width: 1920, height: 1080 };
+    const base = evenize(exportResolution || 1080);
+    return { width: evenize((base * 16) / 9), height: base };
   };
 
   const handleExport = async () => {
@@ -913,7 +846,6 @@ const EditPage = () => {
       safe_h: safeRect.h,
     };
     try {
-      await persistZoomBlocks(zoomBlocks);
       const response = await invoke<{ job_id: string }>("start_export", {
         request: {
           input_path: outputPath,
@@ -924,8 +856,8 @@ const EditPage = () => {
             format: "h264",
             width: size.width,
             height: size.height,
-            fps: 60,
-            bitrate_kbps: 12000,
+            fps: exportFps || 60,
+            bitrate_kbps: bitrateForResolution(exportResolution || 1080),
           },
         },
       });
@@ -972,6 +904,12 @@ const EditPage = () => {
       return;
     }
     const target = typeof time === "number" ? time : previewVideo.currentTime || 0;
+    const clipVisible = clipSegments.length > 0 && isTimeInSegments(clipSegments, target);
+    const avatarVisible = avatarSegments.length > 0 && isTimeInSegments(avatarSegments, target);
+    if (!clipVisible || !avatarVisible) {
+      avatarVideo.pause();
+      return;
+    }
     if (Number.isFinite(avatarVideo.duration) && target <= avatarVideo.duration) {
       avatarVideo.currentTime = target;
     } else {
@@ -1002,63 +940,13 @@ const EditPage = () => {
     if (!ctx) return;
     const vw = video.videoWidth || 0;
     const vh = video.videoHeight || 0;
-    if (video.readyState < 2 || !vw || !vh || !Number.isFinite(video.currentTime)) return;
+    const time = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+    const clipVisible = clipSegments.length > 0 && isTimeInSegments(clipSegments, time);
+    if (clipVisible && (video.readyState < 2 || !vw || !vh)) return;
     ctx.imageSmoothingEnabled = true;
     ctx.clearRect(0, 0, cw, ch);
-    let z = 1;
-    let axn = 0.5;
-    let ayn = 0.5;
-    if (zoomTrack && zoomTrack.frames && zoomTrack.frames.length > 0) {
-      const fps = zoomTrack.fps || 30;
-      const idx = Math.max(0, Math.min(zoomTrack.frames.length - 1, Math.round((video.currentTime || 0) * fps)));
-      const f = zoomTrack.frames[idx];
-      if (f) {
-        z = f.zoom || 1;
-        axn = f.axn ?? 0.5;
-        ayn = f.ayn ?? 0.5;
-      }
-    }
-    const tz = z;
-    const taxn = axn;
-    const tayn = ayn;
-    const prevZ = smoothZoomRef.current ?? tz;
-    const prevAxn = smoothAxnRef.current ?? taxn;
-    const prevAyn = smoothAynRef.current ?? tayn;
-    const nextZ = prevZ + (tz - prevZ) * 0.25;
-    const nextAxn = prevAxn + (taxn - prevAxn) * 0.35;
-    const nextAyn = prevAyn + (tayn - prevAyn) * 0.35;
-    smoothZoomRef.current = nextZ;
-    smoothAxnRef.current = nextAxn;
-    smoothAynRef.current = nextAyn;
-    z = nextZ;
-    axn = nextAxn;
-    ayn = nextAyn;
-    const maxZoom = Math.max(1.0001, zoomTrack?.settings?.max_zoom ?? 2);
-    const rawProgress = (z - 1) / (maxZoom - 1);
-    const easedProgress = easeInOutCubic(clamp(rawProgress, 0, 1));
-    if (Math.abs(zoomProgressRef.current - easedProgress) > 0.001) {
-      zoomProgressRef.current = easedProgress;
-      setZoomProgress(easedProgress);
-    }
-    const renderZoom = z;
-    const renderAxn = editAspect === "9:16" ? 0.5 : axn;
-    const renderAyn = editAspect === "9:16" ? 0.5 : ayn;
     const baseSafe = safeRectForAspect();
-    const safeRect =
-      editAspect === "9:16"
-        ? (() => {
-            const baseTop = baseSafe.y;
-            const baseBottom = 1 - baseSafe.y - baseSafe.h;
-            const zoomTop = lerp(baseTop, ZOOM_MARGIN_TOP_916, easedProgress);
-            const zoomBottom = lerp(baseBottom, ZOOM_MARGIN_BOTTOM_916, easedProgress);
-            return {
-              x: baseSafe.x,
-              y: zoomTop,
-              w: baseSafe.w,
-              h: Math.max(0, 1 - zoomTop - zoomBottom),
-            };
-          })()
-        : baseSafe;
+    const safeRect = baseSafe;
     const safeX = Math.round(safeRect.x * cw);
     const safeY = Math.round(safeRect.y * ch);
     const safeW = Math.max(1, Math.round(safeRect.w * cw));
@@ -1076,37 +964,15 @@ const EditPage = () => {
     compCtx.imageSmoothingEnabled = true;
     compCtx.clearRect(0, 0, cw, ch);
     drawCanvasBackground(compCtx, cw, ch);
-    const destAspect = safeW / safeH;
-    const videoAspect = vw / vh;
-    let srcW = vw;
-    let srcH = vh;
-    let srcX = 0;
-    let srcY = 0;
-    if (videoAspect >= destAspect) {
-      srcH = vh;
-      srcW = Math.max(1, Math.round(vh * destAspect));
-      srcX = Math.round((vw - srcW) / 2);
-      srcY = 0;
-    } else {
-      srcW = vw;
-      srcH = Math.max(1, Math.round(vw / destAspect));
-      srcX = 0;
-      srcY = Math.round((vh - srcH) / 2);
+    if (clipVisible) {
+      const scale = Math.min(safeW / vw, safeH / vh);
+      const destW = Math.max(1, Math.round(vw * scale));
+      const destH = Math.max(1, Math.round(vh * scale));
+      const destX = Math.round(safeX + (safeW - destW) / 2);
+      const destY = Math.round(safeY + (safeH - destH) / 2);
+      compCtx.drawImage(video, 0, 0, vw, vh, destX, destY, destW, destH);
     }
-    compCtx.drawImage(video, srcX, srcY, srcW, srcH, safeX, safeY, safeW, safeH);
-    const sw = Math.max(1, Math.round(cw / Math.max(1e-6, renderZoom)));
-    const sh = Math.max(1, Math.round(ch / Math.max(1e-6, renderZoom)));
-    const baseX = safeX + Math.round(renderAxn * safeW - sw / 2);
-    const baseY = safeY + Math.round(renderAyn * safeH - sh / 2);
-    const baseXClamped = clamp(baseX, 0, Math.max(0, cw - sw));
-    const baseYClamped = clamp(baseY, 0, Math.max(0, ch - sh));
-    const safeMaxX = Math.max(safeX, safeX + safeW - sw);
-    const safeMaxY = Math.max(safeY, safeY + safeH - sh);
-    const safeXClamped = clamp(baseXClamped, safeX, safeMaxX);
-    const safeYClamped = clamp(baseYClamped, safeY, safeMaxY);
-    const sx = Math.round(lerp(baseXClamped, safeXClamped, easedProgress));
-    const sy = Math.round(lerp(baseYClamped, safeYClamped, easedProgress));
-    ctx.drawImage(composite, sx, sy, sw, sh, 0, 0, cw, ch);
+    ctx.drawImage(composite, 0, 0, cw, ch);
     return;
   };
   useEffect(() => {
@@ -1117,10 +983,24 @@ const EditPage = () => {
         rafRef.current = null;
       }
     }
-  }, [previewPlaying, zoomTrack, previewFrameWidth, previewFrameHeight]);
+  }, [previewPlaying, previewFrameWidth, previewFrameHeight, clipSegments, avatarSegments]);
   useEffect(() => {
     drawCanvas();
-  }, [previewTime, zoomTrack, previewFrameWidth, previewFrameHeight]);
+  }, [previewTime, previewFrameWidth, previewFrameHeight, clipSegments, avatarSegments]);
+  useEffect(() => {
+    const video = previewVideoRef.current;
+    if (!video) return;
+    const t = clampTimeToSegments(clipSegments, video.currentTime || 0);
+    if (Number.isFinite(t) && t !== video.currentTime) {
+      video.currentTime = t;
+    }
+    setPreviewTime(t);
+    syncAvatarToPreview(t);
+    drawCanvas();
+  }, [clipSegments, avatarSegments]);
+  const clipVisibleForPreview = clipSegments.length > 0 && isTimeInSegments(clipSegments, previewTime);
+  const avatarVisibleForPreview =
+    clipVisibleForPreview && avatarSegments.length > 0 && isTimeInSegments(avatarSegments, previewTime);
   const previewSurface = previewSrc ? (
     <>
       <video
@@ -1128,6 +1008,7 @@ const EditPage = () => {
         className="h-0 w-0 absolute opacity-0 pointer-events-none"
         src={previewSrc}
         muted
+        preload="metadata"
         playsInline
       />
       <canvas ref={canvasRef} className="h-full w-full" />
@@ -1209,6 +1090,8 @@ const EditPage = () => {
                         : "bottom left"),
                     background: cameraBlur ? "rgba(15, 23, 42, 0.25)" : "rgba(15, 23, 42, 0.18)",
                     backdropFilter: cameraBlur ? "blur(18px) saturate(140%)" : "blur(10px)",
+                    opacity: avatarVisibleForPreview ? 1 : 0,
+                    pointerEvents: "none",
                     ...(cameraPosition === "top_left"
                       ? { top: 12, left: 12 }
                       : cameraPosition === "top_right"
@@ -1297,19 +1180,16 @@ const EditPage = () => {
                 className="w-full"
                 smoothFactor={0.5}
                 clipBlocks={clipBlocks}
-                zoomBlocks={zoomBlocks}
                 avatarBlocks={avatarBlocks}
                 onClipChange={(blocks) => {
-                  setClipBlocks(blocks);
-                  persistClipBlocks(blocks);
-                }}
-                onZoomChange={(blocks) => {
-                  setZoomBlocks(blocks);
-                  persistZoomBlocks(blocks);
+                  const next = normalizeBlocks(blocks);
+                  setClipBlocks(next);
+                  persistClipBlocks(next);
                 }}
                 onAvatarChange={(blocks) => {
-                  setAvatarBlocks(blocks);
-                  persistAvatarBlocks(blocks);
+                  const next = normalizeBlocks(blocks);
+                  setAvatarBlocks(next);
+                  persistAvatarBlocks(next);
                 }}
                 onScrubStart={() => {
                   const video = previewVideoRef.current;
@@ -1321,7 +1201,8 @@ const EditPage = () => {
                 onScrubMove={(tSeconds) => {
                   const video = previewVideoRef.current;
                   if (!video) return;
-                  const t = Math.max(0, Math.min(previewDuration || 0, tSeconds));
+                  const raw = Math.max(0, Math.min(previewDuration || 0, tSeconds));
+                  const t = clampTimeToSegments(clipSegments, raw);
                   video.currentTime = t;
                   syncAvatarToPreview(t);
                   setPreviewTime(t);
@@ -1329,7 +1210,8 @@ const EditPage = () => {
                 onScrubEnd={(tSeconds) => {
                   const video = previewVideoRef.current;
                   if (!video) return;
-                  const t = Math.max(0, Math.min(previewDuration || 0, tSeconds));
+                  const raw = Math.max(0, Math.min(previewDuration || 0, tSeconds));
+                  const t = clampTimeToSegments(clipSegments, raw);
                   video.currentTime = t;
                   isScrubbingRef.current = false;
                   syncAvatarToPreview(t);
@@ -1585,6 +1467,71 @@ const EditPage = () => {
                       onChange={(event) => setEditShadow(Number(event.target.value))}
                     />
                   </div>
+                  <div className="rounded-xl border border-white/10 bg-slate-950/50 p-3">
+                    <div className="mb-2 text-[11px] uppercase tracking-[0.2em] text-slate-500">
+                      Safe Area
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span>X</span>
+                        <span>{Math.round(safeRect.x * 100)}%</span>
+                      </div>
+                      <input
+                        className="mt-2 w-full"
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={Math.round(safeRect.x * 100)}
+                        onChange={(event) => updateSafeRect({ x: Number(event.target.value) / 100 })}
+                      />
+                    </div>
+                    <div className="mt-3">
+                      <div className="flex items-center justify-between">
+                        <span>Y</span>
+                        <span>{Math.round(safeRect.y * 100)}%</span>
+                      </div>
+                      <input
+                        className="mt-2 w-full"
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={Math.round(safeRect.y * 100)}
+                        onChange={(event) => updateSafeRect({ y: Number(event.target.value) / 100 })}
+                      />
+                    </div>
+                    <div className="mt-3">
+                      <div className="flex items-center justify-between">
+                        <span>W</span>
+                        <span>{Math.round(safeRect.w * 100)}%</span>
+                      </div>
+                      <input
+                        className="mt-2 w-full"
+                        type="range"
+                        min={20}
+                        max={100}
+                        step={1}
+                        value={Math.round(safeRect.w * 100)}
+                        onChange={(event) => updateSafeRect({ w: Number(event.target.value) / 100 })}
+                      />
+                    </div>
+                    <div className="mt-3">
+                      <div className="flex items-center justify-between">
+                        <span>H</span>
+                        <span>{Math.round(safeRect.h * 100)}%</span>
+                      </div>
+                      <input
+                        className="mt-2 w-full"
+                        type="range"
+                        min={20}
+                        max={100}
+                        step={1}
+                        value={Math.round(safeRect.h * 100)}
+                        onChange={(event) => updateSafeRect({ h: Number(event.target.value) / 100 })}
+                      />
+                    </div>
+                  </div>
                 </div>
               ) : null}
               </div>
@@ -1769,24 +1716,70 @@ const EditPage = () => {
                         onChange={(event) => setEditShadow(Number(event.target.value))}
                       />
                     </div>
-                    <div>
-                      <div className="flex items-center justify-between">
-                        <span>16:9 左右边距固定 6%</span>
+                    <div className="rounded-xl border border-white/10 bg-slate-950/50 p-3">
+                      <div className="mb-2 text-[11px] uppercase tracking-[0.2em] text-slate-500">
+                        Safe Area
                       </div>
-                      <div className="mt-2 text-slate-400">与竞品一致的左右留边</div>
-                    </div>
-                    <div>
-                      <div className="flex items-center justify-between">
-                        <span>1:1 上下边距固定 24%</span>
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span>X</span>
+                          <span>{Math.round(safeRect.x * 100)}%</span>
+                        </div>
+                        <input
+                          className="mt-2 w-full"
+                          type="range"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={Math.round(safeRect.x * 100)}
+                          onChange={(event) => updateSafeRect({ x: Number(event.target.value) / 100 })}
+                        />
                       </div>
-                      <div className="mt-2 text-slate-400">保持原画面比例，垂直留边</div>
-                    </div>
-                    <div>
-                      <div className="flex items-center justify-between">
-                        <span>Safe Area 9:16</span>
-                        <span>固定 36%</span>
+                      <div className="mt-3">
+                        <div className="flex items-center justify-between">
+                          <span>Y</span>
+                          <span>{Math.round(safeRect.y * 100)}%</span>
+                        </div>
+                        <input
+                          className="mt-2 w-full"
+                          type="range"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={Math.round(safeRect.y * 100)}
+                          onChange={(event) => updateSafeRect({ y: Number(event.target.value) / 100 })}
+                        />
                       </div>
-                      <div className="mt-2 text-slate-400">9:16 上下边距固定 36%</div>
+                      <div className="mt-3">
+                        <div className="flex items-center justify-between">
+                          <span>W</span>
+                          <span>{Math.round(safeRect.w * 100)}%</span>
+                        </div>
+                        <input
+                          className="mt-2 w-full"
+                          type="range"
+                          min={20}
+                          max={100}
+                          step={1}
+                          value={Math.round(safeRect.w * 100)}
+                          onChange={(event) => updateSafeRect({ w: Number(event.target.value) / 100 })}
+                        />
+                      </div>
+                      <div className="mt-3">
+                        <div className="flex items-center justify-between">
+                          <span>H</span>
+                          <span>{Math.round(safeRect.h * 100)}%</span>
+                        </div>
+                        <input
+                          className="mt-2 w-full"
+                          type="range"
+                          min={20}
+                          max={100}
+                          step={1}
+                          value={Math.round(safeRect.h * 100)}
+                          onChange={(event) => updateSafeRect({ h: Number(event.target.value) / 100 })}
+                        />
+                      </div>
                     </div>
                   </div>
                 ) : null}

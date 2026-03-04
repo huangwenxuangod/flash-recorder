@@ -367,43 +367,6 @@ struct CursorEventRecord {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct ZoomFrame {
-    time_ms: u64,
-    axn: f32,
-    ayn: f32,
-    zoom: f32,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct ZoomSettings {
-    max_zoom: f32,
-    ramp_in_s: f64,
-    ramp_out_s: f64,
-    sample_ms: u32,
-    follow_threshold_px: f32,
-}
-
-impl Default for ZoomSettings {
-    fn default() -> Self {
-        Self {
-            max_zoom: 2.0,
-            ramp_in_s: 0.5,
-            ramp_out_s: 0.5,
-            sample_ms: 120,
-            follow_threshold_px: 160.0,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct ZoomTrack {
-    fps: u32,
-    frames: Vec<ZoomFrame>,
-    #[serde(default)]
-    settings: Option<ZoomSettings>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
 struct ClipSegment {
     start_s: f64,
     end_s: f64,
@@ -578,6 +541,23 @@ fn parse_duration_ms(text: &str) -> Option<u64> {
     Some(total.round() as u64)
 }
 
+fn parse_resolution_value(value: &str) -> u32 {
+    let digits = value.chars().filter(|c| c.is_ascii_digit()).collect::<String>();
+    digits.parse::<u32>().unwrap_or(1080)
+}
+
+fn bitrate_for_resolution(value: u32) -> u32 {
+    if value >= 2160 {
+        45000
+    } else if value >= 1440 {
+        20000
+    } else if value >= 1080 {
+        12000
+    } else {
+        6000
+    }
+}
+
 fn get_media_duration_ms(app: &tauri::AppHandle, input_path: &str) -> Option<u64> {
     let output = new_cmd(&ffmpeg_binary_with_app_handle(app))
         .args(["-i", input_path, "-hide_banner"])
@@ -669,7 +649,7 @@ fn rounded_alpha_expr(radius: i32) -> String {
     )
 }
 
-fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_camera: bool, zoom_override: Option<(String, String, String, String)>, camera_enable: Option<String>, clip_select: Option<String>) -> String {
+fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_camera: bool, camera_enable: Option<String>, clip_select: Option<String>) -> String {
     let output_w = profile.width as i32;
     let output_h = profile.height as i32;
     let aspect = aspect_ratio(&edit_state.aspect);
@@ -733,93 +713,20 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     }
     let base = if is_portrait_split {
         unreachable!()
-    } else if let Some((z_expr, x_expr, y_expr, p_expr)) = zoom_override.as_ref() {
-        {
-            let mut z_expr = z_expr.to_string();
-            let mut x_expr = x_expr.to_string();
-            let mut y_expr = y_expr.to_string();
-            if edit_state.aspect.as_str() == "9:16" {
-                let base = z_expr.clone();
-                let z_effective = format!("(1+(2-1)*({p}))", p = p_expr);
-                x_expr = format!("(iw/2 - (iw/({}))/2)", z_effective);
-                y_expr = format!("(ih/2 - (ih/({}))/2)", z_effective);
-                z_expr = z_effective;
-            }
-            let (safe_x_expr, safe_y_expr, safe_w_expr, safe_h_expr) = if edit_state.aspect.as_str() == "9:16" {
-                let top = 0.10f32;
-                let bottom = 0.20f32;
-                let base_top = safe_y;
-                let base_bottom = (1.0 - safe_y - safe_h).max(0.0);
-                (
-                    format!("({}*iw)", safe_x),
-                    format!("(({}*(1-({p}))+{}*({p}))*ih)", base_top, top, p = p_expr),
-                    format!("({}*iw)", safe_w),
-                    format!(
-                        "((1-(({}*(1-({p}))+{}*({p}))+({}*(1-({p}))+{}*({p}))))*ih)",
-                        base_top,
-                        top,
-                        base_bottom,
-                        bottom,
-                        p = p_expr
-                    ),
-                )
-            } else {
-                (
-                    format!("({}*iw)", safe_x),
-                    format!("({}*ih)", safe_y),
-                    format!("({}*iw)", safe_w),
-                    format!("({}*ih)", safe_h),
-                )
-            };
-            let safe_max_x = format!(
-                "max({min},{min}+{sw}-iw/({z}))",
-                min = safe_x_expr,
-                sw = safe_w_expr,
-                z = z_expr
-            );
-            let safe_max_y = format!(
-                "max({min},{min}+{sh}-ih/({z}))",
-                min = safe_y_expr,
-                sh = safe_h_expr,
-                z = z_expr
-            );
-            let x_safe = format!("clip({base},{min},{max})", base = x_expr, min = safe_x_expr, max = safe_max_x);
-            let y_safe = format!("clip({base},{min},{max})", base = y_expr, min = safe_y_expr, max = safe_max_y);
-            let x_expr = format!("({base})+(({safe})-({base}))*({p})", base = x_expr, safe = x_safe, p = p_expr);
-            let y_expr = format!("({base})+(({safe})-({base}))*({p})", base = y_expr, safe = y_safe, p = p_expr);
-            let mut s = format!(
-                "{bg_source}[bg];{bg_comp}[bgc];[0:v]scale={safe_w}:{safe_h}:force_original_aspect_ratio=increase,crop={safe_w}:{safe_h},format=rgba[vid];[bgc][vid]overlay=x={safe_x}:y={safe_y}:shortest=1,format=rgba[comp];[comp]zoompan=z='{z}':x='{x}':y='{y}':d=1:s={inner_w}x{inner_h}:fps={fps}",
-                bg_comp = bg_comp_source,
-                safe_w = safe_w_px,
-                safe_h = safe_h_px,
-                safe_x = safe_x_px,
-                safe_y = safe_y_px,
-                z = z_expr,
-                x = x_expr,
-                y = y_expr,
-                fps = profile.fps
-            );
-            if let Some(expr) = clip_select.as_ref() {
-                s = format!("{},select='{}',setpts=N/({}*TB)", s, expr, profile.fps);
-            }
-            s
-        }
     } else {
-        {
-            let mut s = format!(
-                "{bg_source}[bg];{bg_comp}[bgc];[0:v]scale={safe_w}:{safe_h}:force_original_aspect_ratio=increase,crop={safe_w}:{safe_h},format=rgba[vid];[bgc][vid]overlay=x={safe_x}:y={safe_y}:shortest=1,format=rgba,fps={fps}",
-                bg_comp = bg_comp_source,
-                safe_w = safe_w_px,
-                safe_h = safe_h_px,
-                safe_x = safe_x_px,
-                safe_y = safe_y_px,
-                fps = profile.fps
-            );
-            if let Some(expr) = clip_select.as_ref() {
-                s = format!("{},select='{}',setpts=N/({}*TB)", s, expr, profile.fps);
-            }
-            s
+        let mut s = format!(
+            "{bg_source}[bg];{bg_comp}[bgc];[0:v]scale={safe_w}:{safe_h}:force_original_aspect_ratio=decrease,pad={safe_w}:{safe_h}:(ow-iw)/2:(oh-ih)/2,format=rgba[vid];[bgc][vid]overlay=x={safe_x}:y={safe_y}:shortest=1,format=rgba,fps={fps}",
+            bg_comp = bg_comp_source,
+            safe_w = safe_w_px,
+            safe_h = safe_h_px,
+            safe_x = safe_x_px,
+            safe_y = safe_y_px,
+            fps = profile.fps
+        );
+        if let Some(expr) = clip_select.as_ref() {
+            s = format!("{},select='{}',setpts=N/({}*TB)", s, expr, profile.fps);
         }
+        s
     };
     let rounded = if radius > 0 {
         let alpha_expr = rounded_alpha_expr(radius);
@@ -860,13 +767,7 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
     } else {
         evenize(((inner_w as f32) * 0.10).round() as i32).max(2)
     };
-    let camera_scale_expr = if let Some((_, _, _, p_expr)) = zoom_override.as_ref() {
-        let target = if edit_state.aspect.as_str() == "9:16" { 0.62 } else { 0.7 };
-        let p_expr = p_expr.replace("time", "t");
-        format!("(1+({target}-1)*{p})", target = target, p = p_expr)
-    } else {
-        "1".to_string()
-    };
+    let camera_scale_expr = "1".to_string();
     let camera_size_expr = format!("round({}*({}))", camera_size, camera_scale_expr);
     let offset = if edit_state.aspect.as_str() == "9:16" { 16 } else { 12 };
     let (camera_x_expr, camera_y_expr) = match edit_state.camera_position.as_str() {
@@ -938,135 +839,6 @@ fn build_export_filter(edit_state: &EditState, profile: &ExportProfile, has_came
             enable = enable_expr
         )
     }
-}
-
-fn derive_zoom_override(input_path: &str) -> Option<(String, String, String, String)> {
-    let binding = PathBuf::from(input_path);
-    let dir = binding.parent()?;
-    let path = dir.join("zoom_track.json");
-    let data = fs::read_to_string(&path).ok()?;
-    let track: ZoomTrack = serde_json::from_str(&data).ok()?;
-    if track.frames.is_empty() {
-        return None;
-    }
-    let settings = track.settings.clone().unwrap_or_default();
-    let mut windows: Vec<(f64, f64)> = Vec::new();
-    let mut i = 0usize;
-    let n = track.frames.len();
-    while i < n {
-        while i < n && track.frames[i].zoom <= 1.0001 {
-            i += 1;
-        }
-        if i >= n {
-            break;
-        }
-        let s = (track.frames[i].time_ms as f64) / 1000.0;
-        let mut j = i;
-        while j < n && track.frames[j].zoom > 1.0001 {
-            j += 1;
-        }
-        let e = (track.frames[j.saturating_sub(1)].time_ms as f64) / 1000.0;
-        windows.push((s, e));
-        i = j;
-        if windows.len() > 100 {
-            break;
-        }
-    }
-    let mut z_expr = String::from("1");
-    let mut p_expr = String::from("0");
-    for (s, e) in windows.iter() {
-        let p_up = format!("(1-pow(1-((time-{s})/{r}),3))", s = s, r = settings.ramp_in_s.max(1e-6));
-        let p_flat = String::from("1");
-        let p_down = format!("(1-pow(1-(({e}-time)/{r}),3))", e = e, r = settings.ramp_out_s.max(1e-6));
-        let up = format!("(1+({mz}-1)*({p}))", mz = settings.max_zoom, p = p_up);
-        let flat = format!("{}", settings.max_zoom);
-        let down = format!("(1+({mz}-1)*({p}))", mz = settings.max_zoom, p = p_down);
-        let expr = format!(
-            "if(between(time,{s},{s_up}),{up},if(between(time,{s_up},{e_dn}),{flat},if(between(time,{e_dn},{e}),{down},{fallback})))",
-            s = s,
-            s_up = s + settings.ramp_in_s,
-            e_dn = e - settings.ramp_out_s,
-            e = e,
-            up = up,
-            flat = flat,
-            down = down,
-            fallback = z_expr
-        );
-        z_expr = expr;
-        let p = format!(
-            "if(between(time,{s},{s_up}),{p_up},if(between(time,{s_up},{e_dn}),{p_flat},if(between(time,{e_dn},{e}),{p_down},{fallback})))",
-            s = s,
-            s_up = s + settings.ramp_in_s,
-            e_dn = e - settings.ramp_out_s,
-            e = e,
-            p_up = p_up,
-            p_flat = p_flat,
-            p_down = p_down,
-            fallback = p_expr
-        );
-        p_expr = p;
-    }
-    let mut anchors: Vec<(f64, f64)> = Vec::new();
-    let mut t_prev = f64::MIN;
-    for f in track.frames.iter() {
-        let t = (f.time_ms as f64) / 1000.0;
-        if t - t_prev >= 0.12 {
-            anchors.push((t, f.axn as f64));
-            t_prev = t;
-        }
-        if anchors.len() > 150 {
-            break;
-        }
-    }
-    if anchors.is_empty() {
-        anchors.push((0.0, 0.5));
-        anchors.push((1.0, 0.5));
-    }
-    let mut ax_expr = anchors.last().unwrap().1.to_string();
-    for w in anchors.windows(2).rev() {
-        let (t0, a0) = w[0];
-        let (t1, a1) = w[1];
-        let lerp = format!(
-            "(({a0})*(1-((time-{t0})/({dt})))+({a1})*(((time-{t0})/({dt}))))",
-            a0 = a0,
-            a1 = a1,
-            t0 = t0,
-            dt = (t1 - t0).max(1e-6)
-        );
-        ax_expr = format!("if(between(time,{t0},{t1}),{lerp},{fallback})", t0 = t0, t1 = t1, lerp = lerp, fallback = ax_expr);
-    }
-    let mut ay_anchors: Vec<(f64, f64)> = Vec::new();
-    let mut ty_prev = f64::MIN;
-    for f in track.frames.iter() {
-        let t = (f.time_ms as f64) / 1000.0;
-        if t - ty_prev >= 0.12 {
-            ay_anchors.push((t, f.ayn as f64));
-            ty_prev = t;
-        }
-        if ay_anchors.len() > 150 {
-            break;
-        }
-    }
-    if ay_anchors.is_empty() {
-        ay_anchors.push((0.0, 0.5));
-        ay_anchors.push((1.0, 0.5));
-    }
-    let mut ay_expr = ay_anchors.last().unwrap().1.to_string();
-    for w in ay_anchors.windows(2).rev() {
-        let (t0, a0) = w[0];
-        let (t1, a1) = w[1];
-        let lerp = format!(
-            "(({a0})*(1-((time-{t0})/({dt})))+({a1})*(((time-{t0})/({dt}))))",
-            a0 = a0,
-            a1 = a1,
-            t0 = t0,
-            dt = (t1 - t0).max(1e-6)
-        );
-        ay_expr = format!("if(between(time,{t0},{t1}),{lerp},{fallback})", t0 = t0, t1 = t1, lerp = lerp, fallback = ay_expr);
-    }
-    let x_expr = format!("clip(({ax})*iw - (iw/({z}))/2, 0, iw - iw/({z}))", ax = ax_expr, z = z_expr);
-    let y_expr = format!("clip(({ay})*ih - (ih/({z}))/2, 0, ih - ih/({z}))", ay = ay_expr, z = z_expr);
-    Some((z_expr, x_expr, y_expr, p_expr))
 }
 
 fn derive_camera_enable(input_path: &str) -> Option<String> {
@@ -1255,10 +1027,9 @@ fn run_export_job(
     let has_camera = camera_path
         .map(|path| PathBuf::from(path).exists())
         .unwrap_or(false);
-    let zoom_override = derive_zoom_override(&job.request.input_path);
     let camera_enable = derive_camera_enable(&job.request.input_path);
     let clip_select = derive_clip_select(&job.request.input_path);
-    let filter = build_export_filter(&job.request.edit_state, &job.request.profile, has_camera, zoom_override, camera_enable, clip_select);
+    let filter = build_export_filter(&job.request.edit_state, &job.request.profile, has_camera, camera_enable, clip_select);
     let filter_path = {
         let dir = PathBuf::from(&job.request.output_path)
             .parent()
@@ -1545,13 +1316,43 @@ fn start_recording(
     let cursor_path = output_dir.join("cursor.jsonl");
 
     let fps = if request.fps == 0 { 60 } else { request.fps };
-    let _ = &request.resolution;
+    let resolution_value = parse_resolution_value(&request.resolution);
+    let bitrate_kbps = bitrate_for_resolution(resolution_value);
 
     let capture_mode = request
         .capture_mode
         .as_deref()
         .unwrap_or("screen")
         .to_string();
+    let screen_rect = {
+        #[cfg(target_os = "windows")]
+        {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+                SM_YVIRTUALSCREEN,
+            };
+            let x = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+            let y = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+            let width = evenize(unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) }.max(2));
+            let height = evenize(unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) }.max(2));
+            Rect {
+                x,
+                y,
+                width,
+                height,
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Rect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }
+        }
+    };
+    let mut region_rect: Option<Rect> = None;
     let mut args = vec![
         "-y".into(),
         "-thread_queue_size".into(),
@@ -1592,6 +1393,12 @@ fn start_recording(
         if region.width <= 0 || region.height <= 0 {
             return Err("invalid_region".into());
         }
+        region_rect = Some(Rect {
+            x: region.x,
+            y: region.y,
+            width: region.width,
+            height: region.height,
+        });
         args.extend([
             "-offset_x".into(),
             region.x.to_string(),
@@ -1603,7 +1410,16 @@ fn start_recording(
             "desktop".into(),
         ]);
     } else {
-        args.extend(["-i".into(), "desktop".into()]);
+        args.extend([
+            "-offset_x".into(),
+            screen_rect.x.to_string(),
+            "-offset_y".into(),
+            screen_rect.y.to_string(),
+            "-video_size".into(),
+            format!("{}x{}", screen_rect.width, screen_rect.height),
+            "-i".into(),
+            "desktop".into(),
+        ]);
     }
 
     let mut input_index: usize = 1;
@@ -1699,6 +1515,7 @@ fn start_recording(
         }
     }
 
+    let bitrate_value = format!("{}k", bitrate_kbps.max(1));
     match request.format.as_str() {
         "h265" | "hevc" => {
             args.extend([
@@ -1706,6 +1523,8 @@ fn start_recording(
                 "libx265".into(),
                 "-preset".into(),
                 "fast".into(),
+                "-b:v".into(),
+                bitrate_value.clone(),
             ]);
         }
         _ => {
@@ -1713,9 +1532,11 @@ fn start_recording(
                 "-c:v".into(),
                 "libx264".into(),
                 "-preset".into(),
-                "ultrafast".into(),
+                "fast".into(),
                 "-pix_fmt".into(),
                 "yuv420p".into(),
+                "-b:v".into(),
+                bitrate_value.clone(),
             ]);
         }
     }
@@ -1766,28 +1587,10 @@ fn start_recording(
         ]);
     }
 
-    let rect = {
-        if capture_mode == "region" {
-            let region = request.region.clone().ok_or("region_required")?;
-            Rect {
-                x: region.x,
-                y: region.y,
-                width: region.width,
-                height: region.height,
-            }
-        } else {
-            #[cfg(target_os = "windows")]
-            {
-                use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
-                let w = unsafe { GetSystemMetrics(SM_CXSCREEN) }.max(2);
-                let h = unsafe { GetSystemMetrics(SM_CYSCREEN) }.max(2);
-                Rect { x: 0, y: 0, width: w, height: h }
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                Rect { x: 0, y: 0, width: 1920, height: 1080 }
-            }
-        }
+    let rect = if capture_mode == "region" {
+        region_rect.ok_or("region_required")?
+    } else {
+        screen_rect.clone()
     };
     let started_at_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis() as u64;
     let meta = CaptureMeta { mode: capture_mode.clone(), rect: rect.clone(), started_at_ms };
@@ -1810,17 +1613,6 @@ fn start_recording(
         let stop_flag_clone = stop_flag.clone();
         let cursor_path_clone = cursor_path.clone();
         let rect_clone = rect.clone();
-        let app_clone = app.clone();
-        let track_path = output_dir.join("zoom_track.json");
-        let fps_unified: u32 = 30;
-        let sample_ms: u64 = ((1000.0 / (fps_unified as f64)).round()) as u64;
-        let settings = ZoomSettings {
-            max_zoom: 2.0,
-            ramp_in_s: 0.4,
-            ramp_out_s: 0.4,
-            sample_ms: 120,
-            follow_threshold_px: 160.0,
-        };
         thread::spawn(move || {
             #[cfg(target_os = "windows")]
             {
@@ -1833,14 +1625,9 @@ fn start_recording(
                     return;
                 }
                 let mut writer = BufWriter::new(file.unwrap());
-                let mut frames: Vec<ZoomFrame> = Vec::new();
-                let mut last_sample_ms: u64 = 0;
-                let mut last_flush_ms: u64 = 0;
                 let mut last_btn = false;
                 let mut last_axn = -1f32;
                 let mut last_ayn = -1f32;
-                let mut window_start_ms: Option<u64> = None;
-                let mut window_end_ms: Option<u64> = None;
                 loop {
                     if stop_flag_clone.load(Ordering::Relaxed) {
                         break;
@@ -1873,68 +1660,11 @@ fn start_recording(
                             let _ = writeln!(writer, "{line}");
                             wrote_move = true;
                         }
-                        if let (Some(s), Some(e)) = (window_start_ms, window_end_ms) {
-                            if offset_ms <= e {
-                                // 5s 窗口内再次点击：仅延长窗口，不再重新缓入
-                                window_end_ms = Some(offset_ms.saturating_add(5000));
-                            } else {
-                                window_start_ms = Some(offset_ms);
-                                window_end_ms = Some(offset_ms.saturating_add(5000));
-                            }
-                        } else {
-                            window_start_ms = Some(offset_ms);
-                            window_end_ms = Some(offset_ms.saturating_add(5000));
-                        }
                     } else if !btn && last_btn {
                         let rec = CursorEventRecord { kind: "up".into(), offset_ms, axn, ayn };
                         if let Ok(line) = serde_json::to_string(&rec) {
                             let _ = writeln!(writer, "{line}");
                             wrote_move = true;
-                        }
-                        // 松开不立即结束窗口，仍保持到 window_end_ms 或下一次点击
-                    }
-                    let mut zoom: f32 = 1.0;
-                    if let (Some(s), Some(e)) = (window_start_ms, window_end_ms) {
-                        let ramp = 500u64;
-                        if offset_ms < s.saturating_add(ramp) {
-                            let u = (((offset_ms.saturating_sub(s)) as f64) / (ramp as f64)).clamp(0.0, 1.0);
-                            zoom = (1.0 + (2.0 - 1.0) * (1.0 - (1.0 - u).powi(3))) as f32;
-                        } else if offset_ms <= e.saturating_sub(ramp) {
-                            zoom = 2.0;
-                        } else if offset_ms <= e {
-                            let u = (((e.saturating_sub(offset_ms)) as f64) / (ramp as f64)).clamp(0.0, 1.0);
-                            zoom = (1.0 + (2.0 - 1.0) * (1.0 - (1.0 - u).powi(3))) as f32;
-                        } else {
-                            zoom = 1.0;
-                            window_start_ms = None;
-                            window_end_ms = None;
-                        }
-                    }
-                    let _ = app_clone.emit(
-                        "zoom_frame",
-                        ZoomFrame {
-                            time_ms: offset_ms,
-                            axn,
-                            ayn,
-                            zoom,
-                        },
-                    );
-                    if offset_ms >= last_sample_ms.saturating_add(sample_ms) {
-                        last_sample_ms = offset_ms;
-                        frames.push(ZoomFrame {
-                            time_ms: offset_ms,
-                            axn,
-                            ayn,
-                            zoom,
-                        });
-                        if offset_ms >= last_flush_ms.saturating_add(2000) {
-                            last_flush_ms = offset_ms;
-                            let track = ZoomTrack { fps: fps_unified, frames: frames.clone(), settings: Some(settings.clone()) };
-                            if let Ok(json) = serde_json::to_string(&track) {
-                                let tmp = track_path.with_extension("json.tmp");
-                                let _ = fs::write(&tmp, json);
-                                let _ = fs::rename(&tmp, &track_path);
-                            }
                         }
                     }
                     last_btn = btn;
@@ -1943,13 +1673,6 @@ fn start_recording(
                     } else {
                         thread::sleep(Duration::from_millis(10));
                     }
-                }
-                // final flush
-                let track = ZoomTrack { fps: fps_unified, frames: frames.clone(), settings: Some(settings.clone()) };
-                if let Ok(json) = serde_json::to_string(&track) {
-                    let tmp = track_path.with_extension("json.tmp");
-                    let _ = fs::write(&tmp, json);
-                    let _ = fs::rename(&tmp, &track_path);
                 }
             }
         });
@@ -2297,178 +2020,6 @@ fn cursor_path_for_dir(dir: &PathBuf) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-fn ensure_zoom_track(app: tauri::AppHandle, input_path: String) -> Result<String, String> {
-    let dir = PathBuf::from(&input_path)
-        .parent()
-        .ok_or("invalid_input_path")?
-        .to_path_buf();
-    let path = dir.join("zoom_track.json");
-    if path.exists() {
-        return Ok(path.to_string_lossy().to_string());
-    }
-    let meta_path = dir.join("capture.json");
-    let cursor_path = cursor_path_for_dir(&dir)?;
-    let capture_meta: CaptureMeta = serde_json::from_str(
-        &fs::read_to_string(&meta_path).map_err(|_| "capture_meta_missing")?,
-    )
-    .map_err(|_| "capture_meta_parse_failed")?;
-    let rect_w = capture_meta.rect.width.max(1) as f64;
-    let rect_h = capture_meta.rect.height.max(1) as f64;
-    let fps = 30u32;
-    let duration_ms = get_media_duration_ms(&app, &input_path).unwrap_or(15000);
-    let mut events: Vec<CursorEventRecord> = Vec::new();
-    let data = fs::read_to_string(&cursor_path).map_err(|_| "cursor_read_failed")?;
-    for line in data.lines() {
-        if let Ok(rec) = serde_json::from_str::<CursorEventRecord>(line) {
-            events.push(rec);
-        }
-    }
-    if events.is_empty() {
-        let frames: Vec<ZoomFrame> = (0..=((duration_ms / 1000) * fps as u64))
-            .map(|i| ZoomFrame {
-                time_ms: ((i as f64) * (1000.0 / fps as f64)).round() as u64,
-                axn: 0.5,
-                ayn: 0.5,
-                zoom: 1.0,
-            })
-            .collect();
-        let track = ZoomTrack { fps, frames, settings: Some(ZoomSettings::default()) };
-        fs::write(&path, serde_json::to_string(&track).map_err(|_| "track_serialize_failed")?)
-            .map_err(|_| "track_write_failed")?;
-        return Ok(path.to_string_lossy().to_string());
-    }
-    let mut downs: Vec<usize> = Vec::new();
-    for (i, ev) in events.iter().enumerate() {
-        if ev.kind == "down" {
-            downs.push(i);
-        }
-    }
-    let mut windows: Vec<(f64, f64, Vec<(f64, f32, f32)>)> = Vec::new();
-    let mut wi = 0usize;
-    while wi < downs.len() {
-        let di = downs[wi];
-        let start_rec = &events[di];
-        let mut s = (start_rec.offset_ms as f64) / 1000.0;
-        let mut e = s + 5.0;
-        let mut wj = wi + 1;
-        // 合并 5s 窗口内的连续点击：仅延长窗口终点，不重启缓入
-        while wj < downs.len() {
-            let ds = (events[downs[wj]].offset_ms as f64) / 1000.0;
-            if ds <= e {
-                e = ds + 5.0;
-                wj += 1;
-            } else {
-                break;
-            }
-        }
-        let mut path_px = 0.0;
-        let mut last_axn = start_rec.axn;
-        let mut last_ayn = start_rec.ayn;
-        let mut follow_start_ms: Option<u64> = None;
-        let mut follow_start_axn: f32 = start_rec.axn;
-        let mut follow_start_ayn: f32 = start_rec.ayn;
-        for ev in events.iter().skip(di + 1) {
-            let t = (ev.offset_ms as f64) / 1000.0;
-            if t > e {
-                break;
-            }
-            if ev.kind == "move" {
-                let dx = (ev.axn - last_axn) as f64 * rect_w;
-                let dy = (ev.ayn - last_ayn) as f64 * rect_h;
-                path_px += (dx * dx + dy * dy).sqrt();
-                last_axn = ev.axn;
-                last_ayn = ev.ayn;
-                if follow_start_ms.is_none() && path_px >= 160.0 {
-                    follow_start_ms = Some(ev.offset_ms);
-                    follow_start_axn = ev.axn;
-                    follow_start_ayn = ev.ayn;
-                }
-            }
-        }
-        let mut anchors: Vec<(f64, f32, f32)> = Vec::new();
-        anchors.push((s, start_rec.axn, start_rec.ayn));
-        if let Some(ms) = follow_start_ms {
-            let t_follow = (ms as f64) / 1000.0;
-            anchors.push((t_follow, follow_start_axn, follow_start_ayn));
-            let mut next_sample_ms = ms + 120;
-            for ev in events.iter().skip(di + 1) {
-                let t = (ev.offset_ms as f64) / 1000.0;
-                if t > e {
-                    break;
-                }
-                if ev.kind == "move" && ev.offset_ms >= next_sample_ms {
-                    anchors.push((t, ev.axn, ev.ayn));
-                    next_sample_ms = ev.offset_ms + 120;
-                    if anchors.len() > 4000 {
-                        break;
-                    }
-                }
-            }
-        }
-        let last = anchors.last().cloned().unwrap_or(anchors[0]);
-        anchors.push((e, last.1, last.2));
-        windows.push((s, e, anchors));
-        wi = wj;
-        if windows.len() >= 100 {
-            break;
-        }
-    }
-    let total_frames = ((duration_ms as f64) / (1000.0 / fps as f64)).ceil() as u64;
-    let mut frames: Vec<ZoomFrame> = Vec::with_capacity(total_frames as usize + 1);
-    for i in 0..=total_frames {
-        let t_ms = ((i as f64) * (1000.0 / fps as f64)).round() as u64;
-        let t = (t_ms as f64) / 1000.0;
-        let mut axn: f32 = 0.5;
-        let mut ayn: f32 = 0.5;
-        let mut zoom: f32 = 1.0;
-        for (s, e, anchors) in windows.iter() {
-            if t < *s || t > *e {
-                continue;
-            }
-            let ramp = 0.5f64;
-            if t >= *s && t < *s + ramp {
-                let u = ((t - *s) / ramp).clamp(0.0, 1.0);
-                zoom = (1.0 + (2.0 - 1.0) * (1.0 - (1.0 - u).powi(3))) as f32;
-            } else if t > *e - ramp && t <= *e {
-                let u = (((*e) - t) / ramp).clamp(0.0, 1.0);
-                zoom = (1.0 + (2.0 - 1.0) * (1.0 - (1.0 - u).powi(3))) as f32;
-            } else {
-                zoom = 2.0;
-            }
-            let mut ax = anchors[0].1;
-            let mut ay = anchors[0].2;
-            for w in anchors.windows(2) {
-                let (t0, ax0, ay0) = w[0];
-                let (t1, ax1, ay1) = w[1];
-                if t >= t0 && t <= t1 {
-                    let dt = (t1 - t0).max(0.001);
-                    let u = ((t - t0) / dt).clamp(0.0, 1.0) as f32;
-                    ax = ax0 * (1.0 - u) + ax1 * u;
-                    ay = ay0 * (1.0 - u) + ay1 * u;
-                    break;
-                } else if t > t1 {
-                    ax = ax1;
-                    ay = ay1;
-                }
-            }
-            axn = ax;
-            ayn = ay;
-            break;
-        }
-        frames.push(ZoomFrame {
-            time_ms: t_ms,
-            axn,
-            ayn,
-            zoom,
-        });
-    }
-    let track = ZoomTrack { fps, frames, settings: Some(ZoomSettings::default()) };
-    fs::write(&path, serde_json::to_string(&track).map_err(|_| "track_serialize_failed")?)
-        .map_err(|_| "track_write_failed")?;
-    Ok(path.to_string_lossy().to_string())
-}
-
-#[tauri::command]
 fn ensure_clip_track(app: tauri::AppHandle, input_path: String) -> Result<String, String> {
     let dir = PathBuf::from(&input_path)
         .parent()
@@ -2592,16 +2143,6 @@ fn save_camera_track(input_path: String, track_json: String) -> Result<String, S
     Ok(path.to_string_lossy().to_string())
 }
 #[tauri::command]
-fn save_zoom_track(input_path: String, track_json: String) -> Result<String, String> {
-    let dir = PathBuf::from(&input_path)
-        .parent()
-        .ok_or("invalid_input_path")?
-        .to_path_buf();
-    let path = dir.join("zoom_track.json");
-    fs::write(&path, track_json).map_err(|_| "track_write_failed".to_string())?;
-    Ok(path.to_string_lossy().to_string())
-}
-#[tauri::command]
 fn get_export_dir() -> Result<String, String> {
     Ok(export_dir_with_fallback()
         .to_string_lossy()
@@ -2713,9 +2254,7 @@ pub fn run() {
             save_edit_state,
             load_edit_state,
             ensure_preview,
-            ensure_zoom_track,
             ensure_cursor_track,
-            save_zoom_track,
             ensure_clip_track,
             save_clip_track,
             ensure_camera_track,

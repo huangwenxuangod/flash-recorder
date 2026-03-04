@@ -1,5 +1,5 @@
 import { Button, Card, Popover, PopoverTrigger, PopoverContent } from "@heroui/react";
-import { FiChevronLeft, FiSearch, FiLink, FiMenu, FiScissors, FiCamera, FiMic, FiPlay, FiMaximize2, FiUser, FiBarChart2 } from "react-icons/fi";
+import { FiChevronLeft, FiLink, FiMenu, FiScissors, FiCamera, FiMic, FiPlay, FiUser } from "react-icons/fi";
 import { useEffect, useRef, useState } from "react";
 
 type TimelineUIProps = {
@@ -14,10 +14,8 @@ type TimelineUIProps = {
   onScrubMove?: (tSeconds: number) => void;
   onScrubEnd?: (tSeconds: number) => void;
   clipBlocks?: { id: string; start: number; end: number }[];
-  zoomBlocks?: { id: string; start: number; end: number }[];
   avatarBlocks?: { id: string; start: number; end: number }[];
   onClipChange?: (blocks: { id: string; start: number; end: number }[]) => void;
-  onZoomChange?: (blocks: { id: string; start: number; end: number }[]) => void;
   onAvatarChange?: (blocks: { id: string; start: number; end: number }[]) => void;
 };
 
@@ -33,28 +31,28 @@ const TimelineUI = ({
   onScrubMove,
   onScrubEnd,
   clipBlocks,
-  zoomBlocks,
   avatarBlocks,
   onClipChange,
-  onZoomChange,
   onAvatarChange,
 }: TimelineUIProps) => {
   const labelStep = duration <= 12 ? 0.5 : 1;
   const labels = Array.from({ length: Math.floor(duration / labelStep) + 1 }, (_, i) => +(i * labelStep).toFixed(labelStep < 1 ? 1 : 0));
   const [hoverId, setHoverId] = useState<string | null>(null);
   const railRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [railWidth, setRailWidth] = useState(0);
   const targetXRef = useRef(0);
   const [playheadX, setPlayheadX] = useState(0);
   const playheadXRef = useRef(0);
-  const editingRef = useRef<{ type: "clip" | "zoom" | "avatar"; id: string; mode: "move" | "resize-l" | "resize-r"; startX: number; origStart: number; origEnd: number } | null>(null);
-  const [selected, setSelected] = useState<{ type: "clip" | "zoom" | "avatar"; id?: string } | null>(null);
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; kind: "clip" | "zoom" | "avatar"; id: string } | null>(null);
+  const editingRef = useRef<{ type: "clip" | "avatar"; id: string; mode: "move" | "resize-l" | "resize-r"; startX: number; origStart: number; origEnd: number } | null>(null);
+  const [selected, setSelected] = useState<{ type: "clip" | "avatar"; id?: string } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; kind: "clip" | "avatar"; id: string } | null>(null);
+  const timelineWidth = Math.max(railWidth, Math.max(duration, 1) * majorStepPx);
   useEffect(() => {
     const el = railRef.current;
     if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const init = (playheadPercent / 100) * rect.width;
+    const init = (playheadPercent / 100) * timelineWidth;
     playheadXRef.current = init;
     setPlayheadX(init);
     targetXRef.current = init;
@@ -69,46 +67,60 @@ const TimelineUI = ({
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, []);
+  }, [playheadPercent, smoothFactor, timelineWidth]);
   useEffect(() => {
     const el = railRef.current;
     if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const to = (playheadPercent / 100) * rect.width;
+    const to = (playheadPercent / 100) * timelineWidth;
     targetXRef.current = to;
     if (!dragging) {
       playheadXRef.current = to;
       setPlayheadX(to);
     }
-  }, [playheadPercent, dragging]);
-  const toTime = (x: number) => {
+  }, [playheadPercent, dragging, timelineWidth]);
+  useEffect(() => {
     const el = railRef.current;
-    if (!el || !duration) return 0;
-    const rect = el.getBoundingClientRect();
-    const t = (x / rect.width) * duration;
+    if (!el) return;
+    const update = () => setRailWidth(el.clientWidth);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    const el = railRef.current;
+    if (!el || dragging) return;
+    const viewLeft = el.scrollLeft;
+    const viewRight = viewLeft + el.clientWidth;
+    const padding = Math.max(24, el.clientWidth * 0.2);
+    if (playheadX < viewLeft + padding) {
+      el.scrollLeft = Math.max(0, playheadX - padding);
+    } else if (playheadX > viewRight - padding) {
+      el.scrollLeft = Math.max(0, playheadX - el.clientWidth + padding);
+    }
+  }, [playheadX, dragging]);
+  const toTime = (x: number) => {
+    if (!duration || !timelineWidth) return 0;
+    const t = (x / timelineWidth) * duration;
     return Math.max(0, Math.min(duration, t));
   };
   const toX = (t: number) => {
-    const el = railRef.current;
-    if (!el || !duration) return 0;
-    const rect = el.getBoundingClientRect();
-    return Math.max(0, Math.min((t / duration) * rect.width, rect.width));
+    if (!duration || !timelineWidth) return 0;
+    return Math.max(0, Math.min((t / duration) * timelineWidth, timelineWidth));
   };
   const onPointer = (clientX: number) => {
     const el = railRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
+    const x = Math.max(0, Math.min(clientX - rect.left + el.scrollLeft, timelineWidth));
     targetXRef.current = x;
     if (onScrubMove) {
       onScrubMove(toTime(x));
     }
   };
   const snapOnRelease = () => {
-    const el = railRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const x = Math.max(0, Math.min(targetXRef.current, rect.width));
+    if (!timelineWidth) return;
+    const x = Math.max(0, Math.min(targetXRef.current, timelineWidth));
     const m = minorStepPx;
     const nearest = Math.round(x / m) * m;
     if (Math.abs(nearest - x) <= 4) {
@@ -128,13 +140,13 @@ const TimelineUI = ({
     return `${minutes}:${seconds}:${ms}`;
   };
   const displayTime = dragging ? toTime(targetXRef.current) : ((duration || 0) * (playheadPercent / 100));
-  const handleBlockDown = (ev: React.PointerEvent, kind: "clip" | "zoom" | "avatar", id: string, mode: "move" | "resize-l" | "resize-r") => {
+  const handleBlockDown = (ev: React.PointerEvent, kind: "clip" | "avatar", id: string, mode: "move" | "resize-l" | "resize-r") => {
     ev.stopPropagation();
-    setSelected({ type: kind, id: kind === "zoom" ? id : undefined });
+    setSelected({ type: kind, id });
     const el = railRef.current;
     if (!el) return;
     (el as HTMLDivElement).setPointerCapture(ev.pointerId);
-    const target = (kind === "clip" ? clipBlocks : kind === "zoom" ? zoomBlocks : avatarBlocks) || [];
+    const target = (kind === "clip" ? clipBlocks : avatarBlocks) || [];
     const b = target.find((x) => x.id === id);
     if (!b) return;
     editingRef.current = { type: kind, id, mode, startX: ev.clientX, origStart: b.start, origEnd: b.end };
@@ -166,7 +178,6 @@ const TimelineUI = ({
       ne = applySnap(ne);
       const next = target.map((x) => (x.id === id ? { ...x, start: ns, end: ne } : x));
       if (editingRef.current.type === "clip" && onClipChange) onClipChange(next);
-      if (editingRef.current.type === "zoom" && onZoomChange) onZoomChange(next);
       if (editingRef.current.type === "avatar" && onAvatarChange) onAvatarChange(next);
     };
     const up = () => {
@@ -178,28 +189,26 @@ const TimelineUI = ({
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   };
-  const handleDelete = (k: "clip" | "zoom" | "avatar", id?: string) => {
-    const src = (k === "clip" ? clipBlocks : k === "zoom" ? zoomBlocks : avatarBlocks) || [];
+  const handleDelete = (k: "clip" | "avatar", id?: string) => {
+    const src = (k === "clip" ? clipBlocks : avatarBlocks) || [];
     const next = id ? src.filter((x) => x.id !== id) : [];
     if (k === "clip" && onClipChange) onClipChange(next);
-    if (k === "zoom" && onZoomChange) onZoomChange(next);
     if (k === "avatar" && onAvatarChange) onAvatarChange(next);
     setSelected(null);
     setCtxMenu(null);
   };
-  const handleCopy = (k: "clip" | "zoom" | "avatar", id: string) => {
-    const src = (k === "clip" ? clipBlocks : k === "zoom" ? zoomBlocks : avatarBlocks) || [];
+  const handleCopy = (k: "clip" | "avatar", id: string) => {
+    const src = (k === "clip" ? clipBlocks : avatarBlocks) || [];
     const it = src.find((x) => x.id === id);
     if (!it) return;
     const dup = { ...it, id: `${k}-${Date.now()}` };
     const next = [...src, dup];
     if (k === "clip" && onClipChange) onClipChange(next);
-    if (k === "zoom" && onZoomChange) onZoomChange(next);
     if (k === "avatar" && onAvatarChange) onAvatarChange(next);
     setCtxMenu(null);
   };
-  const handleSplit = (k: "clip" | "zoom" | "avatar", id: string) => {
-    const src = (k === "clip" ? clipBlocks : k === "zoom" ? zoomBlocks : avatarBlocks) || [];
+  const handleSplit = (k: "clip" | "avatar", id: string) => {
+    const src = (k === "clip" ? clipBlocks : avatarBlocks) || [];
     const it = src.find((x) => x.id === id);
     if (!it || !duration) return;
     const t = ((duration || 0) * (playheadPercent / 100));
@@ -212,14 +221,12 @@ const TimelineUI = ({
     const right = { ...it, start: t, id: `${k}-${Date.now() + 1}` };
     const next = src.map((x) => (x.id === id ? left : x)).concat([right]);
     if (k === "clip" && onClipChange) onClipChange(next);
-    if (k === "zoom" && onZoomChange) onZoomChange(next);
     if (k === "avatar" && onAvatarChange) onAvatarChange(next);
     setCtxMenu(null);
   };
-  const renderBlocks = (kind: "clip" | "zoom" | "avatar") => {
-    const items = kind === "clip" ? clipBlocks : kind === "zoom" ? zoomBlocks : avatarBlocks;
-    const color =
-      kind === "clip" ? "bg-[#1e40af]" : kind === "zoom" ? "bg-[#db2777]" : "bg-[#0ea5e9]";
+  const renderBlocks = (kind: "clip" | "avatar") => {
+    const items = kind === "clip" ? clipBlocks : avatarBlocks;
+    const color = kind === "clip" ? "bg-[#1e40af]" : "bg-[#0ea5e9]";
     return (items || []).map((b: { id: string; start: number; end: number }) => {
       const left = toX(b.start);
       const width = Math.max(4, toX(b.end) - toX(b.start));
@@ -255,8 +262,8 @@ const TimelineUI = ({
           ) : null}
           <div className="px-4 py-2.5 flex flex-col justify-between h-full text-white">
             <div className="flex items-center space-x-2">
-              {kind === "clip" ? <FiScissors size={16} /> : kind === "zoom" ? <FiMaximize2 size={16} /> : <FiUser size={16} />}
-              <span className="font-semibold">{kind === "clip" ? "Clip" : kind === "zoom" ? "Zoom" : "Avatar"}</span>
+              {kind === "clip" ? <FiScissors size={16} /> : <FiUser size={16} />}
+              <span className="font-semibold">{kind === "clip" ? "Clip" : "Avatar"}</span>
             </div>
             {kind !== "avatar" ? (
               kind === "clip" ? (
@@ -274,22 +281,7 @@ const TimelineUI = ({
                     <span>1.00×</span>
                   </div>
                 </div>
-            ) : (
-              <div className="flex items-center space-x-4 text-xs text-white/80">
-                <div className="flex items-center space-x-1">
-                  <FiMaximize2 size={14} />
-                  <span>2.00×</span>
-                </div>
-                <div className="flex items-center space-x-1">
-                  <FiPlay size={14} />
-                  <span>0.70×</span>
-                </div>
-                <div className="flex items-center space-x-1">
-                  <FiBarChart2 size={14} />
-                  <span>Zoom 曲线</span>
-                </div>
-              </div>
-            )
+              ) : null
             ) : null}
           </div>
         </div>
@@ -316,24 +308,6 @@ const TimelineUI = ({
             </PopoverTrigger>
             <PopoverContent className="bg-white text-black rounded-md shadow-lg px-2.5 py-1">
               返回
-            </PopoverContent>
-          </Popover>
-          <Popover isOpen={hoverId === "zoom"} placement="top" showArrow offset={8}>
-            <PopoverTrigger>
-              <Button
-                isIconOnly
-                size="sm"
-                variant="light"
-                color="default"
-                className="text-white cursor-pointer"
-                onMouseEnter={() => setHoverId("zoom")}
-                onMouseLeave={() => setHoverId(null)}
-              >
-                <FiSearch size={18} />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="bg-white text-black rounded-md shadow-lg px-2.5 py-1">
-              缩放
             </PopoverContent>
           </Popover>
           <Popover isOpen={hoverId === "link"} placement="top" showArrow offset={8}>
@@ -375,7 +349,7 @@ const TimelineUI = ({
         </div>
 
         <div
-          className="flex-1 relative outline-none focus:outline-none focus-visible:outline-none"
+          className="flex-1 relative outline-none focus:outline-none focus-visible:outline-none overflow-x-auto"
           ref={railRef}
           onPointerDown={(e) => {
             (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
@@ -405,74 +379,71 @@ const TimelineUI = ({
             if (e.key === "Backspace" && selected) {
               const k = selected.type;
               const id = selected.id;
-              const src = (k === "clip" ? clipBlocks : k === "zoom" ? zoomBlocks : avatarBlocks) || [];
+              const src = (k === "clip" ? clipBlocks : avatarBlocks) || [];
               const next = id ? src.filter((x) => x.id !== id) : [];
               if (k === "clip" && onClipChange) onClipChange(next);
-              if (k === "zoom" && onZoomChange) onZoomChange(next);
               if (k === "avatar" && onAvatarChange) onAvatarChange(next);
+              setSelected(null);
+              setCtxMenu(null);
               e.preventDefault();
             }
           }}
           tabIndex={0}
         >
-          <div className="h-9 border-b border-white/10 bg-slate-900/60 flex items-end px-4 relative">
-            <div className="w-full flex justify-between text-[11px] text-slate-400">
-              {labels.map((v) => (
-                <span key={v}>{v}s</span>
-              ))}
-            </div>
-            <div
-              className="absolute top-0 left-0 w-full h-full"
-              style={{
-                backgroundImage:
-                  `linear-gradient(to right, rgba(255,255,255,0.06) 1px, transparent 1px),` +
-                  `linear-gradient(to right, rgba(255,255,255,0.12) 1px, transparent 1px)`,
-                backgroundSize: `${minorStepPx}px 100%, ${majorStepPx}px 100%`,
-              }}
-            />
-          </div>
-
-          <div className="p-4 space-y-4">
-            <Card className="bg-transparent border-none rounded-xl overflow-visible relative" style={{ height: compact ? "60px" : "68px" }}>
-              {renderBlocks("clip")}
-            </Card>
-
-            {zoomBlocks && zoomBlocks.length > 0 ? (
-              <Card className="bg-transparent border-none rounded-xl overflow-visible relative" style={{ height: compact ? "60px" : "68px" }}>
-                {renderBlocks("zoom")}
-              </Card>
-            ) : null}
-
-            <Card className="bg-transparent border-none rounded-xl overflow-visible relative" style={{ height: compact ? "52px" : "64px" }}>
-              {renderBlocks("avatar")}
-            </Card>
-          </div>
-
-          <div className="absolute top-0 bottom-0 w-[2px] bg-cyan-400 shadow-[0_0_10px_#06b6d4] z-10 will-change-transform" style={{ transform: `translateX(${playheadX}px)` }} />
-          {dragging ? (
-            <div
-              className="absolute z-20"
-              style={{ transform: `translateX(${playheadX}px) translateX(-50%)`, top: 24 }}
-            >
-              <div className="relative pointer-events-none rounded-md bg-cyan-400 px-2.5 py-1 text-[12px] font-semibold text-slate-900 shadow-[0_6px_20px_rgba(6,182,212,0.35)]">
-                {formatPrecise(displayTime)}
-                <div
-                  className="absolute left-1/2 -translate-x-1/2 -bottom-1 h-0 w-0 border-t-8 border-t-cyan-400 border-x-8 border-x-transparent"
-                />
+          <div ref={contentRef} className="relative" style={{ width: timelineWidth }}>
+            <div className="h-9 border-b border-white/10 bg-slate-900/60 flex items-end px-4 relative">
+              <div className="w-full flex justify-between text-[11px] text-slate-400">
+                {labels.map((v) => (
+                  <span key={v}>{v}s</span>
+                ))}
               </div>
+              <div
+                className="absolute top-0 left-0 w-full h-full"
+                style={{
+                  backgroundImage:
+                    `linear-gradient(to right, rgba(255,255,255,0.06) 1px, transparent 1px),` +
+                    `linear-gradient(to right, rgba(255,255,255,0.12) 1px, transparent 1px)`,
+                  backgroundSize: `${minorStepPx}px 100%, ${majorStepPx}px 100%`,
+                }}
+              />
             </div>
-          ) : null}
-          {ctxMenu ? (
-            <div
-              className="absolute z-30 bg-slate-900/95 text-white rounded-md shadow-lg border border-white/10"
-              style={{ left: ctxMenu.x, top: ctxMenu.y, transform: "translate(-50%, -50%)" }}
-            >
-              <button className="block px-3 py-1.5 hover:bg-slate-800 w-full text-left" onClick={() => handleDelete(ctxMenu.kind, ctxMenu.id)}>删除</button>
-              <button className="block px-3 py-1.5 hover:bg-slate-800 w-full text-left" onClick={() => handleCopy(ctxMenu.kind, ctxMenu.id)}>复制</button>
-              <button className="block px-3 py-1.5 hover:bg-slate-800 w-full text-left" onClick={() => handleSplit(ctxMenu.kind, ctxMenu.id)}>拆分</button>
-              <button className="block px-3 py-1.5 hover:bg-slate-800 w-full text-left" onClick={() => setCtxMenu(null)}>取消</button>
+
+            <div className="p-4 space-y-4">
+              <Card className="bg-transparent border-none rounded-xl overflow-visible relative" style={{ height: compact ? "60px" : "68px" }}>
+                {renderBlocks("clip")}
+              </Card>
+
+              <Card className="bg-transparent border-none rounded-xl overflow-visible relative" style={{ height: compact ? "52px" : "64px" }}>
+                {renderBlocks("avatar")}
+              </Card>
             </div>
-          ) : null}
+
+            <div className="absolute top-0 bottom-0 w-[2px] bg-cyan-400 shadow-[0_0_10px_#06b6d4] z-10 will-change-transform" style={{ transform: `translateX(${playheadX}px)` }} />
+            {dragging ? (
+              <div
+                className="absolute z-20"
+                style={{ transform: `translateX(${playheadX}px) translateX(-50%)`, top: 24 }}
+              >
+                <div className="relative pointer-events-none rounded-md bg-cyan-400 px-2.5 py-1 text-[12px] font-semibold text-slate-900 shadow-[0_6px_20px_rgba(6,182,212,0.35)]">
+                  {formatPrecise(displayTime)}
+                  <div
+                    className="absolute left-1/2 -translate-x-1/2 -bottom-1 h-0 w-0 border-t-8 border-t-cyan-400 border-x-8 border-x-transparent"
+                  />
+                </div>
+              </div>
+            ) : null}
+            {ctxMenu ? (
+              <div
+                className="absolute z-30 bg-slate-900/95 text-white rounded-md shadow-lg border border-white/10"
+                style={{ left: ctxMenu.x, top: ctxMenu.y, transform: "translate(-50%, -50%)" }}
+              >
+                <button className="block px-3 py-1.5 hover:bg-slate-800 w-full text-left" onClick={() => handleDelete(ctxMenu.kind, ctxMenu.id)}>删除</button>
+                <button className="block px-3 py-1.5 hover:bg-slate-800 w-full text-left" onClick={() => handleCopy(ctxMenu.kind, ctxMenu.id)}>复制</button>
+                <button className="block px-3 py-1.5 hover:bg-slate-800 w-full text-left" onClick={() => handleSplit(ctxMenu.kind, ctxMenu.id)}>拆分</button>
+                <button className="block px-3 py-1.5 hover:bg-slate-800 w-full text-left" onClick={() => setCtxMenu(null)}>取消</button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
 
