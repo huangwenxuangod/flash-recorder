@@ -345,13 +345,16 @@ const EditPage = () => {
     const handlePlay = () => setPreviewPlaying(true);
     const handlePause = () => setPreviewPlaying(false);
     const handleEnded = () => {
+      const start = clampTimeToSegments(clipSegments, 0);
       video.pause();
-      video.currentTime = 0;
+      video.currentTime = start;
       setPreviewPlaying(false);
-      setPreviewTime(0);
+      setPreviewTime(start);
+      syncAvatarToPreview(start);
+      drawCanvas();
       if (avatarVideoRef.current) {
         avatarVideoRef.current.pause();
-        avatarVideoRef.current.currentTime = 0;
+        avatarVideoRef.current.currentTime = start;
       }
     };
     const handleSeeked = () => {
@@ -747,6 +750,8 @@ const EditPage = () => {
   const previewControlsDisabled = !previewSrc || previewLoading || !!previewError;
   const exportBusy =
     exportStatus?.state === "running" || exportStatus?.state === "queued";
+  const exportProgress = Math.max(0, Math.min(1, exportStatus?.progress ?? 0));
+  const exportProgressLabel = `${Math.round(exportProgress * 100)}%`;
 
   const [exportDir, setExportDir] = useState("");
   const [exportFps, setExportFps] = useState(() => Number(localStorage.getItem(SETTINGS_FPS) ?? 60));
@@ -1170,6 +1175,22 @@ const EditPage = () => {
                 <span>打开文件夹</span>
               </Button>
             </div>
+
+            {exportBusy ? (
+              <div className="w-full px-6">
+                <div className="flex items-center gap-2">
+                  <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-800">
+                    <div
+                      className="h-full rounded-full bg-cyan-400"
+                      style={{ width: `${exportProgress * 100}%` }}
+                    />
+                  </div>
+                  <div className="w-10 text-right text-[10px] text-slate-400">
+                    {exportProgressLabel}
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
  
             <div className="w-full px-3 py-2">

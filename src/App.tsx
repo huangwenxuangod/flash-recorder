@@ -40,6 +40,9 @@ const SETTINGS_EXPORT_DIR = "settingsExportDir";
 const SETTINGS_FPS = "settingsFps";
 const SETTINGS_RESOLUTION = "settingsResolution";
 const SETTINGS_AUTOSTART = "settingsAutostart";
+const UPDATE_ENDPOINTS = [
+  "https://github.com/huangwenxuangod/flash-recorder/releases/latest/download/latest.json",
+];
 
 const defaultSettings = (): AppSettings => ({
   exportDir: localStorage.getItem(SETTINGS_EXPORT_DIR) ?? "",
@@ -273,6 +276,33 @@ function MainApp() {
     }
     setUpdateStatus("checking");
     setUpdateMessage("");
+    const probe = await (async () => {
+      for (const url of UPDATE_ENDPOINTS) {
+        try {
+          const res = await fetch(url, { cache: "no-store" });
+          if (!res.ok) {
+            return { ok: false, message: `更新源不可用（${res.status}）` };
+          }
+          const data = await res.json();
+          if (!data || typeof data.version !== "string" || !data.platforms) {
+            return { ok: false, message: "更新源格式不正确" };
+          }
+          return { ok: true, message: "" };
+        } catch (error) {
+          return { ok: false, message: String(error) };
+        }
+      }
+      return { ok: false, message: "更新源不可用" };
+    })();
+    if (!probe.ok) {
+      if (silent) {
+        setUpdateStatus("idle");
+        return;
+      }
+      setUpdateStatus("error");
+      setUpdateMessage(probe.message);
+      return;
+    }
     try {
       const update = await check();
       updateRef.current = update;
@@ -287,8 +317,18 @@ function MainApp() {
         }
       }
     } catch (error) {
+      if (silent) {
+        setUpdateStatus("idle");
+        return;
+      }
+      const raw = String(error);
+      if (raw.includes("valid release JSON")) {
+        setUpdateStatus("error");
+        setUpdateMessage("更新源不可用，请确认 Release 已上传 latest.json 与 .sig");
+        return;
+      }
       setUpdateStatus("error");
-      setUpdateMessage(String(error));
+      setUpdateMessage(raw);
     }
   };
 

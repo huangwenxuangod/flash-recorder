@@ -1042,6 +1042,11 @@ fn run_export_job(
             None
         }
     };
+    let cleanup_filter = |path: &Option<PathBuf>| {
+        if let Some(p) = path.as_ref() {
+            let _ = fs::remove_file(p);
+        }
+    };
     let mut args = vec!["-y".to_string(), "-i".to_string(), job.request.input_path.clone()];
     if let Some(path) = camera_path {
         if has_camera {
@@ -1106,15 +1111,24 @@ fn run_export_job(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("ffmpeg_not_found: {} (bin={})", e.to_string(), bin))?;
+        .map_err(|e| {
+            cleanup_filter(&filter_path);
+            format!("ffmpeg_not_found: {} (bin={})", e.to_string(), bin)
+        })?;
     let stdout = child
         .stdout
         .take()
-        .ok_or("export_stdout_unavailable".to_string())?;
+        .ok_or_else(|| {
+            cleanup_filter(&filter_path);
+            "export_stdout_unavailable".to_string()
+        })?;
     let stderr = child
         .stderr
         .take()
-        .ok_or("export_stderr_unavailable".to_string())?;
+        .ok_or_else(|| {
+            cleanup_filter(&filter_path);
+            "export_stderr_unavailable".to_string()
+        })?;
     let job_id = job.job_id.clone();
     let app_handle = app.clone();
     let state_handle = Arc::clone(state);
@@ -1174,12 +1188,13 @@ fn run_export_job(
             let _ = child.wait();
             let _ = reader_handle.join();
             let _ = stderr_handle.join();
+            cleanup_filter(&filter_path);
             return Err("export_cancelled".to_string());
         }
         if let Ok(Some(status)) = child.try_wait() {
             let _ = reader_handle.join();
             let stderr_output = stderr_handle.join().unwrap_or_default();
-            return if status.success() {
+            let result = if status.success() {
                 Ok(())
             } else if stderr_output.trim().is_empty() {
                 Err("export_failed".to_string())
@@ -1195,6 +1210,8 @@ fn run_export_job(
                     .join("\n");
                 Err(format!("export_failed:\n{tail}"))
             };
+            cleanup_filter(&filter_path);
+            return result;
         }
         thread::sleep(Duration::from_millis(120));
     }
