@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use tauri::{async_runtime, Emitter, Manager, State};
@@ -893,6 +893,78 @@ fn derive_clip_select(input_path: &str) -> Option<String> {
         Some(expr)
     }
 }
+
+fn load_clip_track(input_path: &str) -> Option<ClipTrack> {
+    let binding = PathBuf::from(input_path);
+    let dir = binding.parent()?;
+    let path = dir.join("clip_track.json");
+    let data = fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&data).ok()
+}
+
+fn load_camera_track(input_path: &str) -> Option<CameraTrack> {
+    let binding = PathBuf::from(input_path);
+    let dir = binding.parent()?;
+    let path = dir.join("camera_track.json");
+    let data = fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&data).ok()
+}
+
+fn build_clip_select_window(track: &ClipTrack, start_s: f64, end_s: f64) -> Option<String> {
+    let mut expr = String::new();
+    for seg in track.segments.iter() {
+        let seg_start = seg.start_s.max(start_s);
+        let seg_end = seg.end_s.min(end_s);
+        if seg_end <= seg_start {
+            continue;
+        }
+        let part = format!(
+            "between(t,{},{})",
+            seg_start - start_s,
+            seg_end - start_s
+        );
+        if expr.is_empty() {
+            expr = part;
+        } else {
+            expr = format!("({})+({})", expr, part);
+        }
+    }
+    if expr.is_empty() {
+        None
+    } else {
+        Some(expr)
+    }
+}
+
+fn build_camera_enable_window(track: &CameraTrack, start_s: f64, end_s: f64) -> Option<String> {
+    let mut expr = String::new();
+    for seg in track.segments.iter() {
+        if !seg.visible {
+            continue;
+        }
+        let seg_start = seg.start_s.max(start_s);
+        let seg_end = seg.end_s.min(end_s);
+        if seg_end <= seg_start {
+            continue;
+        }
+        let part = format!(
+            "between(t,{},{})",
+            seg_start - start_s,
+            seg_end - start_s
+        );
+        if expr.is_empty() {
+            expr = part;
+        } else {
+            expr = format!("({})+({})", expr, part);
+        }
+    }
+    if expr.is_empty() {
+        None
+    } else {
+        Some(expr)
+    }
+}
+
 fn emit_export_status(app: &tauri::AppHandle, status: &ExportStatus) {
     let _ = app.emit("export_progress", status);
 }
@@ -1013,12 +1085,373 @@ fn export_worker(app: tauri::AppHandle, state: Arc<Mutex<ExportManager>>) {
     }
 }
 
+fn run_ffmpeg_with_progress<F, G>(
+    app: &tauri::AppHandle,
+    args: Vec<String>,
+    duration_ms: u64,
+    progress_cb: F,
+    cancel_check: G,
+) -> Result<(), String>
+where
+    F: Fn(f32) + Send + Sync,
+    G: Fn() -> bool + Send + Sync,
+{
+    let bin = ffmpeg_binary_with_app_handle(app);
+    let mut child = new_cmd(&bin)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("ffmpeg_not_found: {} (bin={})", e.to_string(), bin))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("export_stdout_unavailable".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("export_stderr_unavailable".to_string())?;
+    let stderr_handle = thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut buffer = String::new();
+        let _ = reader.read_to_string(&mut buffer);
+        buffer
+    });
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    loop {
+        if cancel_check() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stderr_handle.join();
+            return Err("export_cancelled".to_string());
+        }
+        line.clear();
+        let bytes = match reader.read_line(&mut line) {
+            Ok(bytes) => bytes,
+            Err(_) => break,
+        };
+        if bytes == 0 {
+            break;
+        }
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("out_time_ms=") {
+            if let Ok(out_time_ms) = value.parse::<u64>() {
+                let progress = if duration_ms == 0 {
+                    0.0
+                } else {
+                    (out_time_ms as f64 / duration_ms as f64).min(1.0) as f32
+                };
+                progress_cb(progress);
+            }
+        }
+        if trimmed == "progress=end" {
+            break;
+        }
+    }
+    let status = child.wait().map_err(|_| "export_wait_failed".to_string())?;
+    let stderr_output = stderr_handle.join().unwrap_or_default();
+    if status.success() {
+        Ok(())
+    } else if stderr_output.trim().is_empty() {
+        Err("export_failed".to_string())
+    } else {
+        let tail = stderr_output
+            .lines()
+            .rev()
+            .take(12)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        Err(format!("export_failed:\n{tail}"))
+    }
+}
+
+fn run_segmented_export(
+    app: &tauri::AppHandle,
+    state: &Arc<Mutex<ExportManager>>,
+    job: &ExportJob,
+    total_ms: u64,
+) -> Result<(), String> {
+    let segment_ms = 300_000u64;
+    let max_parallel = 2usize;
+    let segment_count = ((total_ms + segment_ms - 1) / segment_ms).max(1) as usize;
+    let output_path = PathBuf::from(&job.request.output_path);
+    let output_dir = output_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| env::temp_dir());
+    let stem = output_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("export");
+    let ext = output_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("mp4");
+    let segment_paths: Vec<PathBuf> = (0..segment_count)
+        .map(|idx| output_dir.join(format!("{stem}_part_{idx:03}.{ext}")))
+        .collect();
+    let clip_track = load_clip_track(&job.request.input_path);
+    let camera_track = load_camera_track(&job.request.input_path);
+    let camera_path = job
+        .request
+        .camera_path
+        .as_ref()
+        .filter(|path| !path.is_empty());
+    let has_camera = camera_path
+        .map(|path| PathBuf::from(path).exists())
+        .unwrap_or(false);
+    let progress_vec = Arc::new(Mutex::new(vec![0.0f32; segment_count]));
+    let next_index = Arc::new(AtomicUsize::new(0));
+    let abort_flag = Arc::new(AtomicBool::new(false));
+    let error_ref = Arc::new(Mutex::new(None::<String>));
+    let job_id = job.job_id.clone();
+    let output_path_str = job.request.output_path.clone();
+    let mut handles = Vec::new();
+    for _ in 0..max_parallel {
+        let app_handle = app.clone();
+        let state_handle = Arc::clone(state);
+        let progress_handle = Arc::clone(&progress_vec);
+        let next_handle = Arc::clone(&next_index);
+        let abort_handle = Arc::clone(&abort_flag);
+        let error_handle = Arc::clone(&error_ref);
+        let clip_track = clip_track.clone();
+        let camera_track = camera_track.clone();
+        let input_path = job.request.input_path.clone();
+        let profile = job.request.profile.clone();
+        let edit_state = job.request.edit_state.clone();
+        let camera_path = camera_path.map(|p| p.to_string());
+        let segments = segment_paths.clone();
+        let output_dir = output_dir.clone();
+        let job_id = job_id.clone();
+        let output_path_str = output_path_str.clone();
+        let handle = thread::spawn(move || {
+            loop {
+                if abort_handle.load(Ordering::Relaxed) {
+                    break;
+                }
+                let idx = next_handle.fetch_add(1, Ordering::Relaxed);
+                if idx >= segment_count {
+                    break;
+                }
+                let start_ms = idx as u64 * segment_ms;
+                let end_ms = (start_ms + segment_ms).min(total_ms);
+                if end_ms <= start_ms {
+                    break;
+                }
+                let duration_ms = end_ms - start_ms;
+                let start_s = start_ms as f64 / 1000.0;
+                let end_s = end_ms as f64 / 1000.0;
+                let clip_select =
+                    clip_track.as_ref().and_then(|t| build_clip_select_window(t, start_s, end_s));
+                let camera_enable = camera_track
+                    .as_ref()
+                    .and_then(|t| build_camera_enable_window(t, start_s, end_s));
+                let filter =
+                    build_export_filter(&edit_state, &profile, has_camera, camera_enable, clip_select);
+                let filter_path = {
+                    let path = output_dir.join(format!("fr_filter_{}_{}.txt", job_id, idx));
+                    if fs::write(&path, &filter).is_ok() {
+                        Some(path)
+                    } else {
+                        None
+                    }
+                };
+                let mut args = vec![
+                    "-y".to_string(),
+                    "-ss".to_string(),
+                    format!("{:.3}", start_s),
+                    "-i".to_string(),
+                    input_path.clone(),
+                ];
+                if let Some(path) = camera_path.as_ref() {
+                    if has_camera {
+                        args.push("-i".to_string());
+                        args.push(path.to_string());
+                    }
+                }
+                if let Some(path) = filter_path.as_ref() {
+                    args.extend([
+                        "-filter_complex_script".to_string(),
+                        path.to_string_lossy().to_string(),
+                    ]);
+                } else {
+                    args.extend(["-filter_complex".to_string(), filter]);
+                }
+                args.extend([
+                    "-map".to_string(),
+                    "[v]".to_string(),
+                    "-map".to_string(),
+                    "0:a?".to_string(),
+                    "-r".to_string(),
+                    profile.fps.to_string(),
+                    "-t".to_string(),
+                    format!("{:.3}", (duration_ms as f64) / 1000.0),
+                ]);
+                let bitrate = format!("{}k", profile.bitrate_kbps.max(1));
+                match profile.format.as_str() {
+                    "h265" | "hevc" => {
+                        args.extend([
+                            "-c:v".to_string(),
+                            "libx265".to_string(),
+                            "-preset".to_string(),
+                            "fast".to_string(),
+                            "-b:v".to_string(),
+                            bitrate,
+                        ]);
+                    }
+                    _ => {
+                        args.extend([
+                            "-c:v".to_string(),
+                            "libx264".to_string(),
+                            "-preset".to_string(),
+                            "fast".to_string(),
+                            "-pix_fmt".to_string(),
+                            "yuv420p".to_string(),
+                            "-b:v".to_string(),
+                            bitrate,
+                        ]);
+                    }
+                }
+                args.extend([
+                    "-c:a".to_string(),
+                    "aac".to_string(),
+                    "-b:a".to_string(),
+                    "160k".to_string(),
+                    "-progress".to_string(),
+                    "pipe:1".to_string(),
+                    "-nostats".to_string(),
+                    segments[idx].to_string_lossy().to_string(),
+                ]);
+                let cancel_check = || {
+                    abort_handle.load(Ordering::Relaxed)
+                        || state_handle
+                            .lock()
+                            .map(|guard| guard.cancellations.get(&job_id).copied().unwrap_or(false))
+                            .unwrap_or(false)
+                };
+                let progress_cb = |p: f32| {
+                    let mut guard = progress_handle.lock().unwrap();
+                    guard[idx] = p.min(1.0).max(0.0);
+                    let sum = guard.iter().copied().sum::<f32>();
+                    let overall = sum / segment_count as f32;
+                    drop(guard);
+                    let status = ExportStatus {
+                        job_id: job_id.clone(),
+                        state: "running".to_string(),
+                        progress: overall.min(1.0).max(0.0),
+                        error: None,
+                        output_path: Some(output_path_str.clone()),
+                    };
+                    if let Ok(mut guard) = state_handle.lock() {
+                        guard.statuses.insert(job_id.clone(), status.clone());
+                    }
+                    emit_export_status(&app_handle, &status);
+                };
+                let result = run_ffmpeg_with_progress(
+                    &app_handle,
+                    args,
+                    duration_ms,
+                    progress_cb,
+                    cancel_check,
+                );
+                if let Some(path) = filter_path.as_ref() {
+                    let _ = fs::remove_file(path);
+                }
+                match result {
+                    Ok(()) => {
+                        {
+                            let mut guard = progress_handle.lock().unwrap();
+                            guard[idx] = 1.0;
+                            let sum = guard.iter().copied().sum::<f32>();
+                            let overall = sum / segment_count as f32;
+                            drop(guard);
+                            let status = ExportStatus {
+                                job_id: job_id.clone(),
+                                state: "running".to_string(),
+                                progress: overall.min(1.0).max(0.0),
+                                error: None,
+                                output_path: Some(output_path_str.clone()),
+                            };
+                            if let Ok(mut guard) = state_handle.lock() {
+                                guard.statuses.insert(job_id.clone(), status.clone());
+                            }
+                            emit_export_status(&app_handle, &status);
+                        }
+                    }
+                    Err(err) => {
+                        abort_handle.store(true, Ordering::Relaxed);
+                        if let Ok(mut guard) = error_handle.lock() {
+                            if guard.is_none() {
+                                *guard = Some(err);
+                            }
+                        }
+                        let _ = fs::remove_file(&segments[idx]);
+                        break;
+                    }
+                }
+            }
+        });
+        handles.push(handle);
+    }
+    for handle in handles {
+        let _ = handle.join();
+    }
+    if let Ok(err) = error_ref.lock().map(|guard| guard.clone()) {
+        if let Some(message) = err {
+            for path in segment_paths.iter() {
+                let _ = fs::remove_file(path);
+            }
+            return Err(message);
+        }
+    }
+    let list_path = output_dir.join(format!("{stem}_concat.txt"));
+    let mut list_content = String::new();
+    for path in segment_paths.iter() {
+        list_content.push_str(&format!("file '{}'\n", path.to_string_lossy()));
+    }
+    fs::write(&list_path, list_content).map_err(|_| "concat_list_write_failed".to_string())?;
+    let bin = ffmpeg_binary_with_app_handle(app);
+    let status = new_cmd(&bin)
+        .args([
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            list_path.to_string_lossy().as_ref(),
+            "-c",
+            "copy",
+            &job.request.output_path,
+        ])
+        .status()
+        .map_err(|e| format!("ffmpeg_not_found: {} (bin={})", e.to_string(), bin))?;
+    let _ = fs::remove_file(&list_path);
+    for path in segment_paths.iter() {
+        let _ = fs::remove_file(path);
+    }
+    if status.success() {
+        emit_progress(1.0);
+        Ok(())
+    } else {
+        Err("export_concat_failed".to_string())
+    }
+}
+
 fn run_export_job(
     app: &tauri::AppHandle,
     state: &Arc<Mutex<ExportManager>>,
     job: &ExportJob,
 ) -> Result<(), String> {
     let duration_ms = get_media_duration_ms(app, &job.request.input_path);
+    let total_ms = duration_ms.unwrap_or(0);
+    if total_ms > 300_000 {
+        return run_segmented_export(app, state, job, total_ms);
+    }
     let camera_path = job
         .request
         .camera_path
